@@ -65,7 +65,7 @@ title: 磁盘IO学习
 - 元数据管理优化：减少对元数据的查询操作，将小于1k的文件直接保存在inode中；
 
 ## 参考
-1. http://tech.meituan.com/about-desk-io.html
-2. http://bbs.mydigit.cn/read.php?tid=331754
+1. <http://tech.meituan.com/about-desk-io.html>
+2. <http://bbs.mydigit.cn/read.php?tid=331754>
 
 {{ page.date | date: "%Y-%m-%d %H:%M:%S" }}
