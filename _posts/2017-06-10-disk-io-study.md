@@ -8,6 +8,7 @@ title: 磁盘IO学习
 ## 磁盘物理结构
 
 ![f1757eb9-eb28-41db-9d8e-68fafe2208a4](/images/f1757eb9-eb28-41db-9d8e-68fafe2208a4.jpg)
+<img src="/images/f1757eb9-eb28-41db-9d8e-68fafe2208a4.jpg" border="0" class="" style="line-height: 1.6;" width="300" height="300">
 
 主要包括：
 - 磁盘盘片：存储实际数据；
@@ -21,6 +22,7 @@ title: 磁盘IO学习
 ## 磁盘相关术语
 
 ![b9fdc773-a00e-4446-9034-cac423f3b11d](/images/b9fdc773-a00e-4446-9034-cac423f3b11d.jpg)
+<img src="/images/b9fdc773-a00e-4446-9034-cac423f3b11d.jpg" border="0" class="" width="384" height="311" style="line-height: 1.6;">
 
 - 磁道：盘面上有很多半径不同的同心圆，每个同心圆为一个磁道；
 - 扇区：每个磁道被等分成若干个弧段，每个弧段为一个扇区；
@@ -49,6 +51,7 @@ title: 磁盘IO学习
 一次IO请求，在操作系统层面，从上到下大致经过以下几个层次：
 
 ![f70372cc55735d442675e3fe31381f65](/images/f70372cc55735d442675e3fe31381f65.png)
+<img src="/images/f70372cc55735d442675e3fe31381f65.png" border="0" class="" width="372" height="293">
 
 - 虚拟文件系统层（VFS Layer）：主要是对不同的文件系统，提供统一的访问接口；
 - 文件系统层（NFS/Ext2/Ext3/NTFS等）：Linux系统允许多种文件系统共存，每一个分区使用一种文件系统，可以跨文件系统操作文件；
