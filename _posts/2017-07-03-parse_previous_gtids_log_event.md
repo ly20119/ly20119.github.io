@@ -109,10 +109,13 @@ enum_return_status Gtid_set::add_gtid_encoding(const uchar *encoded,
 ```
 
 根据以上代码，很容易得到previous_gtid的格式如下：【event body格式，省略了前面19字节的common header】
+
+```
 +-------+--------+----------+-------------+--------------+---------------+-------------------------
 |sid_num|sid1    |interv_num|interv1_start|interv1_end   |interv2_start  |interv2_end |sid2    |...
 |8 bytes|16 bytes|8 bytes   |8 bytes      |8 bytes       |8 bytes        |8 bytes     |16 bytes|...
 +-------+--------+----------+-------------+--------------+---------------+-------------------------
+```
 
 previous_gtids_log_event格式中，post_header长度为0， 所以除去前面19字节的common header, 剩余的body部分就是要解析的数据部分。
 将mysql代码转为手动解析的代码如下：
