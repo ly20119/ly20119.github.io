@@ -3,5 +3,3 @@ baseurl: .
 theme: jekyll-theme-slate
 
 encoding: utf-8
-
-color_scheme: amber
