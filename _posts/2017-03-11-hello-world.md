@@ -1,10 +1,13 @@
 ---
-layout: default
+layout: post
 title: 你好，世界
+categories: 
+tags: 
 ---
 
-## {{ page.title }}
+* content
+{:toc}
+
+## Hello
 
 我的第一篇文章
-
-{{ page.date | date: "%Y-%m-%d %H:%M:%S" }}
