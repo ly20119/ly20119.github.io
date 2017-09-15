@@ -9,7 +9,7 @@
 title: Polli
 brief-intro: Come On!
 # the subpath of your site, e.g. /blog
-baseurl: .
+baseurl: "/polli"
 # the base hostname & protocol for your site
 url: "http://pollilog.cn"
 
