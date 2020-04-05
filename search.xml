@@ -1,0 +1,974 @@
+<?xml version="1.0" encoding="utf-8"?>
+<search>
+  <entry>
+    <title>使用cgroup限制iops失败的问题</title>
+    <url>/2018/11/03/cgroup-limit-diskio-failed/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>我们经常使用cgroup做一些资源隔离，比如内存、CPU、磁盘空间以及磁盘IO。对应的子系统是cpuset、memory、blkio。具体cgroup相关详细介绍，请查看<a href="https://access.redhat.com/documentation/zh-cn/red_hat_enterprise_linux/7/html/resource_management_guide/" target="_blank" rel="noopener">redhat官方文档</a>，不再详述，这里只是记录下我在使用cgroup限制diskio时遇到的一个问题。</p>
+<a id="more"></a>
+
+<h3 id="问题"><a href="#问题" class="headerlink" title="问题"></a><strong>问题</strong></h3><p>我们要对自己的一组agent做iops限制，agent是安装在/data目录下，磁盘信息如下图：</p>
+<p><img src="/images/add5faca-099f-4b57-852c-3eb6845e6ea2.png" alt="disk信息"></p>
+<p>可以看到/data目录挂载的设备为/dev/sda4，根据设备查找设备编号为(8:4)，如下图：</p>
+<p><img src="/images/29395705.png" alt="设备编号"></p>
+<p>现在，我们开始使用cgroup限制agent的diskio，具体操作脚本如下：</p>
+<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line"><span class="meta">#</span>定义校验函数</span><br><span class="line">function verify_cg_val_iops()</span><br><span class="line">&#123;</span><br><span class="line">    metric_name="$1"</span><br><span class="line">    expected_val_dev_num="$2"</span><br><span class="line">    expected_val_dev_iops="$3"</span><br><span class="line">    </span><br><span class="line">    #获取已配置的设备号</span><br><span class="line">    val_get_res_dev_num=`cgget -n -r $&#123;metric_name&#125; agents | awk '&#123;print $2&#125;'`</span><br><span class="line">    test_exitcode "cgget $&#123;metric_name&#125; failed for $&#123;port&#125;, cgget_result=$&#123;val_get_res_dev_num&#125;"</span><br><span class="line">    </span><br><span class="line">    #获取已配置的iops值</span><br><span class="line">    val_get_res_dev_iops=`cgget -n -r $&#123;metric_name&#125; agents | awk '&#123;print $3&#125;'`</span><br><span class="line">    test_exitcode "cgget $&#123;metric_name&#125; failed for $&#123;port&#125;, cgget_result=$&#123;val_get_res_dev_iops&#125;"</span><br><span class="line">    </span><br><span class="line">    #校验设备号</span><br><span class="line">    if [ "$&#123;expected_val_dev_num&#125;" != "$&#123;val_get_res_dev_num&#125;" ]; then</span><br><span class="line">        echo "$&#123;metric_name&#125; expected dev_num val=$&#123;expected_val_dev_num&#125; not equal to from cgget=$&#123;val_get_res_dev_num&#125;"</span><br><span class="line">        exit 1</span><br><span class="line">    fi</span><br><span class="line">    </span><br><span class="line">    #校验iops值</span><br><span class="line">    if [ "$&#123;expected_val_dev_iops&#125;" != "$&#123;val_get_res_dev_iops&#125;" ]; then</span><br><span class="line">        echo "$&#123;metric_name&#125; expected dev_iops val=$&#123;expected_val_dev_iops&#125; not equal to from cgget=$&#123;val_get_res_dev_iops&#125;"</span><br><span class="line">        exit 1</span><br><span class="line">    fi</span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span>创建一个隔离组agents</span><br><span class="line">cgcreate -g blkio:/agents</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span>限制agent组对指定设备号的disk的读iops为3000</span><br><span class="line">cgset -r blkio.throttle.read_iops_device="8:4 3000" agents</span><br><span class="line">test_exitcode "io read set for 8:4 failed"</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span>检查读iops是否配置正确</span><br><span class="line">verify_cg_val_iops "blkio.throttle.read_iops_device" "8:4" "3000"</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span>限制agent组对指定设备号的disk的写iops为3000</span><br><span class="line">cgset -r blkio.throttle.write_iops_device="8:4 3000" agents</span><br><span class="line">test_exitcode "io write set for 8:4 failed"</span><br><span class="line"></span><br><span class="line"><span class="meta">#</span>检查写iops是否配置正确</span><br><span class="line">verify_cg_val_iops "blkio.throttle.write_iops_device" "8:4" "3000"</span><br></pre></td></tr></table></figure>
+
+<p>执行时报错，错误信息为:</p>
+<blockquote>
+<p>blkio.throttle.read_iops_device expected dev_num val=8:4 not equal to from cgget=</p>
+</blockquote>
+<p>读iops配置失败，校验的设备号（为空）与预期设备号（8:4）不一致。</p>
+<p>设备号写错了吗？/dev/sda4的设备号确实是8:4，没错啊，什么原因呢？</p>
+<p>手动配置呢？</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">cd /sys/fs/cgroup/blkio/agents</span><br><span class="line"></span><br><span class="line">echo &quot;8:4 3000&quot; &gt; blkio.throttle.read_iops_device</span><br><span class="line"></span><br><span class="line">-bash: echo: write error: Invalid argument</span><br></pre></td></tr></table></figure>
+
+<p>显示参数错误，再尝试直接vim打开写入，保存退出时报错：</p>
+<blockquote>
+<p>“blkio.throttle.read_iops_device” E667: Fsync failed</p>
+</blockquote>
+<h3 id="解决"><a href="#解决" class="headerlink" title="解决"></a><strong>解决</strong></h3><p>无奈之下，寻求谷歌大神，最终在stackoverflow上找到问题原因和解决方法。</p>
+<p>原帖回答如下：</p>
+<blockquote>
+<p>The problem was that I used /dev/sda5 as the device name, while in fact the physical device name (as opposed to the partitioned, logical device) must be use. It now works when I specify the <major>:<minor> id of /dev/sda – user1734905</minor></major></p>
+</blockquote>
+<p>意思就是：<strong>在使用blkio做iops隔离时，应该指定的是物理磁盘的编号，而不是物理盘的某个分区的编号</strong>。</p>
+<p>回到上面的问题，我们使用的是/dev/sda4的编号，实际上我们的机器只有一块物理盘，做了4个分区，/dev/sda4只是物理盘/dev/sda的一个分区，应该使用/dev/sda的编号（8:0）。</p>
+<p><img src="/images/29415642.png" alt="物理盘信息"></p>
+<p>修改脚本中的设备编号8:4为8:0，再执行脚本，问题解决。</p>
+<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
+<li><a href="https://access.redhat.com/documentation/zh-cn/red_hat_enterprise_linux/7/html/resource_management_guide/" target="_blank" rel="noopener">https://access.redhat.com/documentation/zh-cn/red_hat_enterprise_linux/7/html/resource_management_guide/</a></li>
+<li><a href="https://stackoverflow.com/questions/24959846/cgroup-blkio-files-cannot-be-written" target="_blank" rel="noopener">https://stackoverflow.com/questions/24959846/cgroup-blkio-files-cannot-be-written</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>底层技术</category>
+      </categories>
+      <tags>
+        <tag>cgroup</tag>
+        <tag>diskio</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>MySQL实战笔记--深入理解RR隔离级别</title>
+    <url>/2019/04/29/deep-learning-rr-iso-level/</url>
+    <content><![CDATA[<h2 id="一致性视图的创建时间"><a href="#一致性视图的创建时间" class="headerlink" title="一致性视图的创建时间"></a>一致性视图的创建时间</h2><ul>
+<li><code>start transaction</code> 并不是一个事务的起点，在执行到它之后的第一个操作InnoDB表的语句，事务才真正启动。如果要立即启动一个事务，可以使用<code>start transaction with consistent shapshot</code>；</li>
+<li>在使用<code>start transaction</code> 时，一致性视图是在执行第一个快照读语句是创建的；</li>
+<li>使用<code>start transaction with consistent shapshot</code> 时，一致性视图是在该语句执行时就创建了；</li>
+</ul>
+<a id="more"></a>
+
+<h2 id="两种视图"><a href="#两种视图" class="headerlink" title="两种视图"></a>两种视图</h2><ul>
+<li>普通视图：一个用查询语句定义的虚拟表，在调用的时候执行查询语句生成结果；</li>
+<li>一致性读视图：InnoDB的MVCC是使用一致性读视图实现的，该视图是RC和RR隔离级别实现的基础；</li>
+</ul>
+<h2 id="事务快照的实现"><a href="#事务快照的实现" class="headerlink" title="事务快照的实现"></a>事务快照的实现</h2><ul>
+<li><p>InnoDB中每个事务都有一个唯一的transaction id，是按照顺序严格递增的；</p>
+</li>
+<li><p>每行数据会有多个版本，每次有事务更新该行数据时，就会生成一个新的数据版本，并将该事务ID记录到该版本的row trx_id中，表示该版本是由哪个事务产生的；同时旧版本也会保留，并且可以通过新版本访问旧版本数据；（链表？）</p>
+</li>
+<li><p>行数据版本示例：<br><img src="/images/6fa4ef0a-d71e-48ea-aed7-833c54d144f1.jpg" alt="数据版本"><br>说明：</p>
+<blockquote>
+<ol>
+<li>图中在物理上只存在V4，也就是最新版本，V1、V2和V3都是逻辑上存在的，是通过Undo日志计算出来的；</li>
+<li>也就是说物理上，每行数据只会保留其最新版本，及所有未提交事务产生的Undo日志；</li>
+</ol>
+</blockquote>
+</li>
+<li><p>可重复读：事务启动时，能够看到所有已提交的事务的结果，能够看到事务内的结果，但在该事务执行期间，其他事务的更新对其不可见；</p>
+</li>
+<li><p>事务启动时，InnoDB生成一个数组，保存事务启动时所有处于active状态的事务的ID；数组中的最小事务ID为低水位，当前系统中已经创建过的最大事务ID加1为高水位；</p>
+</li>
+<li><p>该视图数组以及高水位，一起构成了一个该事务的一致性读视图；<br><img src="/images/35642708-132e-4a18-bb4c-d666086a69e5.jpg" alt="一致性视图"></p>
+</li>
+<li><p>对于当前事务来说，数据版本的可见性规则如下：</p>
+<blockquote>
+<ol>
+<li>如果数据版本中的row trx_id小于低水位，表示该数据已提交，则该数据版本对当前事务来说是可见的；</li>
+<li>如果数据版本中的row trx_id等于当前事务ID，表示数据版本是当前事务产生的，则该数据版本对当前事务来说也是可见的；</li>
+<li>如果数据版本中的row trx_id大于等于高水位，表示数据版本是未来某个事务产生的，则该数据版本对当前事务来说不可见；</li>
+<li>如果数据版本中的row tx_id在低水位和高水位之间，此时如果row trx_id在当前事务的视图数组中，表示该数据版本是由未提交的事务产生的，则该数据版本对当前事务来说不可见；如果row trx_id不在当前事务的视图数组中，表示该数据版本是由已提交的事务产生的，则该数据版本对当前事务来说是可见的；</li>
+</ol>
+</blockquote>
+</li>
+<li><p>基于以上规则，实现了事务的快照；</p>
+</li>
+<li><p>InnoDB 利用了”所有数据都有多个版本”的这个特性，实现了秒级快照；</p>
+</li>
+</ul>
+<h2 id="示例"><a href="#示例" class="headerlink" title="示例"></a>示例</h2><ul>
+<li><p>表结构如下：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">mysql&gt; CREATE TABLE `t` (</span><br><span class="line">  `id` int(11) NOT NULL,</span><br><span class="line">  `k` int(11) DEFAULT NULL,</span><br><span class="line">  PRIMARY KEY (`id`)</span><br><span class="line">) ENGINE=InnoDB;</span><br><span class="line">insert into t(id, k) values(1,1),(2,2);</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>事务信息如下：<br><img src="/images/0.773495696646938.png" alt="事务提交顺序"></p>
+</li>
+<li><p>问题：</p>
+<ul>
+<li>事务A的查询结果？</li>
+<li>事务B的查询结果？</li>
+</ul>
+</li>
+<li><p>分析</p>
+<ul>
+<li>假设id=1的数据在事务ABC开始前，row trx_id = 90；</li>
+<li>假设事务ABC的transaction id分别为100，101，102；</li>
+<li>假设事务A开始前还有active 的事务，其id = 99，且再没有其他事务；</li>
+<li>则按照之前的一致性视图描述，事务A的一致性视图数组为[99, 100]，其中低水位为99，高水位为101；</li>
+<li>同理可得事务B的一致性视图数组为[99，100，101]，其中低水位为99，高水位为102；</li>
+<li>同理可得事务C的一致性视图数组为[99，100，101，102]，其中低水位为99，高水位为103；</li>
+<li>id=1的数据的版本列表为：最新版本的row trx_id = 101，次新版本的row trx_id = 102，之后是row trx_id = 90；</li>
+<li>则按照RR隔离级别下可见性规则，可知，事务A在查询时，首先发现最新版本101等于其视图数组的高水位101，则该版本不可见，继续找旧版本；接着发现102大于其高水位101，也不可见，最后发现90小于其低水位99，可见，得到最后查询结果是1；</li>
+<li>事务B在查询开始时，按照可见性规则，可知，事务B发现最新版本101等于当前事务ID 101，则是该事务内更新，可见，得到最后查询结果是3；</li>
+</ul>
+</li>
+</ul>
+<h2 id="其他点"><a href="#其他点" class="headerlink" title="其他点"></a>其他点</h2><ul>
+<li>数据更新时是先读后写的，这里的读，是“当前读”，即读当前时刻数据版本的最新值；</li>
+<li>当有多个事务同时读数据最新值时，需要加锁来保证顺序；比如：如果示例中的事务C没有立即提交，而是在事务B的更新和提交之间再提交，则事务B的更新就会由于需要等待事务C的提交而卡住（等待事务C释放id=1的行锁）；</li>
+</ul>
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><ul>
+<li><p>RR隔离级别的核心是一致性读视图；</p>
+</li>
+<li><p>事务在执行更新时需要执行当前读，如果当前有其他事务占据了行锁，则需要等待；</p>
+</li>
+<li><p>RR隔离级别在事务开始时就创建了一致性读视图，之后事务中的其他语句都共享该一致性读视图；</p>
+</li>
+<li><p>RC隔离级别在事务的第一个语句开始执行时才创建一致性读视图，之后事务中每条语句执行前都会重新计算一遍一致性读视图；</p>
+<ul>
+<li>在RC隔离级别下再分析一下示例；</li>
+<li>显然数据的版本依旧是101–&gt; 102 –&gt; 90；</li>
+<li>事务A在执行查询时的一致性视图为[99, 100, 101]，低水位是99，高水位是103；则发现数据版本101在一致性视图数组中，且与当前事务ID不等，属于未提交事务，则不可见，继续找102版本，发现102版本不再一致性视图数组中，且小于高水位，属于已经提交的版本，可见，得到结果为2；</li>
+<li>事务B的查询时的一致性视图为[99, 100, 101], 低水位是99，高水位是103；则发现数据版本101在一致性视图数组中，且与当前事务ID相等，可见，得到结果为3；</li>
+</ul>
+</li>
+<li><p>对于表结构，由于其没有对应的行数据，所以没有row trx_id字段，只能遵循当前读，也就是读最新版本；</p>
+</li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+        <tag>innodb</tag>
+        <tag>iso</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>磁盘IO学习</title>
+    <url>/2017/06/10/disk-io-study/</url>
+    <content><![CDATA[<h2 id="磁盘物理结构"><a href="#磁盘物理结构" class="headerlink" title="磁盘物理结构"></a>磁盘物理结构</h2><img src="/images/f1757eb9-eb28-41db-9d8e-68fafe2208a4.jpg" border="0" class style="line-height: 1.6;" width="300" height="300">
+
+<p>主要包括：</p>
+<ul>
+<li>磁盘盘片：存储实际数据；</li>
+<li>主轴：转动盘片；</li>
+<li>读写磁头：读写盘片上的实际数据；</li>
+<li>转动手臂：伸展磁头，让磁头位于要读取数据的盘片位置；</li>
+<li>转动轴：负责转动手臂的伸展；</li>
+</ul>
+<a id="more"></a>
+
+<blockquote>
+<p>每个磁盘有一到多个盘片，每个盘片有上下两个面用来存储数据，对应有上下两个磁头负责读写。</p>
+</blockquote>
+<h2 id="磁盘相关术语"><a href="#磁盘相关术语" class="headerlink" title="磁盘相关术语"></a>磁盘相关术语</h2><img src="/images/b9fdc773-a00e-4446-9034-cac423f3b11d.jpg" border="0" class width="384" height="311" style="line-height: 1.6;">
+
+<ul>
+<li>磁道：盘面上有很多半径不同的同心圆，每个同心圆为一个磁道；</li>
+<li>扇区：每个磁道被等分成若干个弧段，每个弧段为一个扇区；</li>
+<li>柱面：多个盘面上半径相同的同心圆组成一个柱面；</li>
+</ul>
+<p><strong>存储容量＝磁头数×磁道（柱面）数×每个磁道扇区数×每个扇区字节数</strong></p>
+<h2 id="影响磁盘性能的主要因素"><a href="#影响磁盘性能的主要因素" class="headerlink" title="影响磁盘性能的主要因素"></a>影响磁盘性能的主要因素</h2><ul>
+<li>寻道时间：将读写磁头移动到正确的磁道上方需要花费的时间，毫秒级；</li>
+<li>旋转时间：主轴将请求的数据所在的盘面扇区移动到磁头下方所花费的时间，毫秒级；</li>
+<li>数据传输时间：完成数据传输所需要的时间；</li>
+</ul>
+<p><strong>一次I/O请求耗时 = 寻道时间 + 旋转延迟 + 数据传输时间</strong></p>
+<blockquote>
+<p>旋转时间与磁盘转速有关，大约是磁盘转一圈所需时间的一半。例如：7200rpm的磁盘旋转时间约为60×1000/7200/2=4.17ms。</p>
+</blockquote>
+<h2 id="磁盘性能的衡量指标"><a href="#磁盘性能的衡量指标" class="headerlink" title="磁盘性能的衡量指标"></a>磁盘性能的衡量指标</h2><ul>
+<li>IOPS：每秒内磁盘的读写次数，理论值计算方法：IOPS = 1000 / （Tseek + Trotate + Transfer）；</li>
+<li>吞吐量：单位时间内传输的数据量；</li>
+</ul>
+<blockquote>
+<p>机械硬盘的顺序读写性能很好，但随机读写性能很差，这主要是因为：磁头移动到对应的磁道上需要时间，随机读写时，磁头需要不停的移动，时间都浪费在了磁头的移动上，所以性能不高。</p>
+</blockquote>
+<h2 id="操作系统一次IO路径"><a href="#操作系统一次IO路径" class="headerlink" title="操作系统一次IO路径"></a>操作系统一次IO路径</h2><p>一次IO请求，在操作系统层面，从上到下大致经过以下几个层次：</p>
+<img src="/images/f70372cc55735d442675e3fe31381f65.png" border="0" class width="372" height="293">
+
+<ul>
+<li>虚拟文件系统层（VFS Layer）：主要是对不同的文件系统，提供统一的访问接口；</li>
+<li>文件系统层（NFS/Ext2/Ext3/NTFS等）：Linux系统允许多种文件系统共存，每一个分区使用一种文件系统，可以跨文件系统操作文件；</li>
+<li>缓存层（page cache）：缓存磁盘上的数据，提高IO读写的性能；</li>
+<li>通用块层（Generic Block　Layer）：对底层块设备的抽象，是粘合所有上层和底层的部分，BIO是其主要数据结构；</li>
+<li>IO调度层（IO　Scheduler　Layer）：采用合适的IO调度算法，调度IO请求到下层，会对IO请求进行排序合并；</li>
+<li>块设备驱动层（Block　Device　Driver　Layer）：从上层中取出I/O请求，并根据该I/O请求中指定的信息，通过向具体块设备的设备控制器发送命令的方式，来操纵设备传输数据；</li>
+<li>块设备层（Block　Device　Layery）：磁盘设备；</li>
+</ul>
+<h2 id="IO性能优化技巧"><a href="#IO性能优化技巧" class="headerlink" title="IO性能优化技巧"></a>IO性能优化技巧</h2><ul>
+<li>追加写：保证写性能的情况下优化读性能，类似的有HDFS、Kafka;</li>
+<li>合并小文件：大小小于一个block的小文件合并保存在一个block中；</li>
+<li>元数据管理优化：减少对元数据的查询操作，将小于1k的文件直接保存在inode中；</li>
+</ul>
+<h2 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h2><ol>
+<li><a href="http://tech.meituan.com/about-desk-io.html" target="_blank" rel="noopener">http://tech.meituan.com/about-desk-io.html</a></li>
+<li><a href="http://bbs.mydigit.cn/read.php?tid=331754" target="_blank" rel="noopener">http://bbs.mydigit.cn/read.php?tid=331754</a></li>
+</ol>
+]]></content>
+      <categories>
+        <category>底层技术</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+        <tag>IO</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>你好，世界</title>
+    <url>/2017/03/11/hello-world/</url>
+    <content><![CDATA[<p>我的第一篇文章</p>
+]]></content>
+  </entry>
+  <entry>
+    <title>做事</title>
+    <url>/2017/06/09/do-thing/</url>
+    <content><![CDATA[<p>1.核心问题是什么？（只能有一个，如果有很多，找到最重要的那个）</p>
+<p>2.这个问题的背景是什么？（来龙去脉，历史原因）</p>
+<p>3.和现在这个问题有关的人物和因素有哪些？（记住MECE法则，用归纳法，一一列出来）</p>
+<p>4.哪些是导致这个问题的关键原因？</p>
+<p>5.哪些是次要原因？</p>
+<p>6.解决这个问题有哪些方法？（用归纳法，写出所有可能。用演绎法，找到每种方法实施的具体步骤）</p>
+<p>7.解决这个问题，你现在欠缺哪些条件或者资源？</p>
+<p>8.如何去弥补这些条件上的欠缺？</p>
+<p>9.你的时间规划是怎样的，先做什么，再做什么，然后做什么？</p>
+<p>10.最后一步，just do it.</p>
+<a id="more"></a>]]></content>
+      <categories>
+        <category>随笔</category>
+      </categories>
+      <tags>
+        <tag>Note</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>MySQL实战笔记--理解行锁</title>
+    <url>/2019/04/04/mysql-row-lock/</url>
+    <content><![CDATA[<h2 id="知识点"><a href="#知识点" class="headerlink" title="知识点"></a>知识点</h2><ul>
+<li>行锁是在引擎层实现的，不是所有的引擎都实现了行锁，比如MyISAM引擎就不支持行锁；</li>
+<li>行锁相比表锁，锁粒度更小，所以并发性能更好，所以，对应对并发有要求的业务，推荐不要使用MyISAM引擎；</li>
+<li>在InnoDB事务中，行锁是需要时才加上的，但并不是不需要了就立刻释放，只有在事务结束的时候才释放掉，这个过程叫两阶段锁协议；</li>
+</ul>
+<a id="more"></a>
+
+<ul>
+<li>建议：如果在一个事务中需要多个行锁，建议把最可能造成锁冲突，最可能影响并发度的锁尽量往后放；</li>
+<li>由于锁和并发的问题，存在死锁的可能性，InnoDB中采用两种方式处理死锁：innodb_lock_wait_timeout和innodb_deadlock_detect；</li>
+<li>innodb_lock_wait_timeout表示出现死锁时，等待一定时间后自动退出，并释放已经持有的所有锁，这样其他线程就可以抢到锁了，这个超时时间默认是50s；该值不能设置太小，会导致短时等待的锁被误伤；<strong>开启这种策略时，对业务是有损的</strong>；</li>
+<li>innodb_deadlock_detect表示是否开启死锁检测，为on时开启，默认为on，开启时，事务在执行前会发起死锁检测，发现死锁后，回滚掉锁链条中某个事物，使其他事务得以继续；死锁检测的时间复杂度是O(n)，所以开启的代价是占用过多的CPU，导致性能下降；</li>
+<li>从业务角度来看，降低死锁的几个思路：<ul>
+<li>如果确保业务不会出现死锁，可以把死锁检测关掉，带来的风险是，出现死锁时，需要等待超时后回滚，对业务有损；</li>
+<li>控制并发度，保证时间复杂度较低，风险是，单个应用的并发度较低，但是在应用很多的情况下，并发度依旧很高，没有根本解决死锁问题；</li>
+<li>逻辑上把热点行改成多行，降低死锁概率，但是需要业务实现额外的特殊处理逻辑，使得业务逻辑复杂化；</li>
+</ul>
+</li>
+<li>如果有使用中间件，可以在中间件层实现并发控制；</li>
+<li>最终方案，修改MySQL内核代码，基本思路是，对同一行的更新进行排队；</li>
+</ul>
+<h2 id="案例分析"><a href="#案例分析" class="headerlink" title="案例分析"></a>案例分析</h2><ul>
+<li><p>问题：在备库上使用mysqldump –single-transaction做逻辑备份，如果同时在主库对一个小表做DDL，会有什么影响？</p>
+</li>
+<li><p>思路：深入理解mysqldump的备份过程</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">Q1:SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;</span><br><span class="line">Q2:START TRANSACTION WITH CONSISTENT SNAPSHOT；</span><br><span class="line">/* other tables */</span><br><span class="line">Q3:SAVEPOINT sp;</span><br><span class="line">/* 时刻 1 */</span><br><span class="line">Q4:show create table `t1`;</span><br><span class="line">/* 时刻 2 */</span><br><span class="line">Q5:SELECT * FROM `t1`;</span><br><span class="line">/* 时刻 3 */</span><br><span class="line">Q6:ROLLBACK TO SAVEPOINT sp;</span><br><span class="line">/* 时刻 4 */</span><br><span class="line">/* other tables */</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>说明</p>
+<ul>
+<li>为了得到所有表的一致性读，所以修改session隔离级别为RR；</li>
+<li>在启动事务时使用WITH CONSISTENT SNAPSHOT，可以保证语句执行完可以得到一个一致性视图；</li>
+<li>设置事务保存点（作用是在事务内部分割成逻辑上的几个部分，事务失败时可将事务状态恢复到该保存点）；</li>
+<li>获取表结构；</li>
+<li>获取表中数据；</li>
+<li>将事务回滚到保存点的状态，主要是为了释放当前表上的MDL锁；</li>
+</ul>
+</li>
+<li><p>解答</p>
+<ul>
+<li>如果DDL在时刻1执行，则无影响，此时备份的是修改后的表结构和数据；</li>
+<li>如果DDL在时刻2执行，则mysqldump会在Q5报错退出；（schema错误）</li>
+<li>如果DDL在时刻3执行，则由于mysqldump已经拿到该表的MDL锁，则DDL需要等待，整个SQL线程阻塞，会导致主从差距变大；SQL线程会一直等到Q6执行完才能继续；</li>
+<li>如果DDL在时刻4执行，则无影响，此时备份的是修改前的表结构和数据；</li>
+</ul>
+</li>
+<li><p>其他思考</p>
+<ul>
+<li><p>实际上，在mysqldump备份时，在Q1之前，还有两条语句需要执行：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">FLUSH TABLES;</span><br><span class="line">FLUSH TABLES WITH READ LOCK;</span><br></pre></td></tr></table></figure>
+</li>
+<li><p><code>flush tables</code>的作用是：1.关闭打开的表，失效缓存，同时刷脏；2.等待所有事务的提交，以保证第二条语句尽快执行完；</p>
+</li>
+<li><p>如果DDL在<code>flush tables</code>之前执行，则<code>flush tables</code>会等待DDL完成后才执行，备份数据为修改后的表结构和数据；</p>
+</li>
+<li><p>如果DDL在两个语句之间，则同样，FTWRL会被阻塞，等到DDL完成后才执行，备份数据为修改后的表结构和数据；</p>
+</li>
+</ul>
+</li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+        <tag>innodb</tag>
+        <tag>lock</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>如何使用系统调用mount挂载NFS</title>
+    <url>/2018/11/02/mount-nfs-use-system-call/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近一直在使用NFS做一些开发和测试，功能开发完毕后，需要对NFS的可用性做一些监控，没有使用crontab+shell脚本的方式，总觉得这么做的都是临时方案，不成体系，所以就基于现有的框架写了一个轻量级的服务。具体的监控事项包括NFS的挂载和卸载、基本的读写、剩余空间等，发现异常后给出告警提示。基本的功能比较简单，但是在开发的时候却遇到一个问题：<br>在C++代码中，如何使用系统调用mount()来挂载NFS？</p>
+<a id="more"></a>
+
+<h3 id="讨论"><a href="#讨论" class="headerlink" title="讨论"></a><strong>讨论</strong></h3><p>我们都知道，在Linux命令行下，使用系统工具mount可以很简单的完成这个事情：</p>
+<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">mount -t nfs 10.10.123.101:/vbumjko7 -o "vers=3,nolock,proto=tcp"</span><br></pre></td></tr></table></figure>
+
+<p>但是在C++代码中怎么搞呢？方法大致如下：</p>
+<ul>
+<li>调用system执行mount命令</li>
+<li>调用popen执行mount命令</li>
+<li>调用系统API函数mount()</li>
+</ul>
+<h3 id="探索"><a href="#探索" class="headerlink" title="探索"></a><strong>探索</strong></h3><p>system和popen的方式都是起子进程执行shell命令来完成挂载任务，这样本质上跟直接使用shell命令没有区别，且实现上比shell更复杂（你还要编译、调试），所以不会采用。<br>使用mount API怎么做呢？man了一下mount，原型如下：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">mount</span><span class="params">(<span class="keyword">const</span> <span class="keyword">char</span> *source, <span class="keyword">const</span> <span class="keyword">char</span> *target,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">char</span> *filesystemtype, <span class="keyword">unsigned</span> <span class="keyword">long</span> mountflags,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">void</span> *data)</span></span>;</span><br></pre></td></tr></table></figure>
+
+<p>说明：</p>
+<blockquote>
+<ul>
+<li>source – 表示需要挂载的设备或者目录；</li>
+<li>target – 表示目标挂载点（一个目录，比如/mnt/test_nfs）；</li>
+<li>filesystemtype – 表示需要挂载的文件系统类型，比如”ext2”, “ext3”, “jfs”, “xfs”, “nfs”等，我们这里是”nfs”；</li>
+<li>mountflags – 表示用来控制mount行为的标识掩码；</li>
+<li>data – 依据挂载的文件系统类型，指定相关的挂载选项；</li>
+</ul>
+</blockquote>
+<p>看上去很简单就可以完成，比如我们这样：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>编译运行，意想不到的输出：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">ERROR: mount failed: Invalid Argument</span><br></pre></td></tr></table></figure>
+
+<p>参数都是根据手册填的，哪里出错了呢？</p>
+<h3 id="解决"><a href="#解决" class="headerlink" title="解决"></a><strong>解决</strong></h3><p>谷歌找一下，发现在stackoverflow上有一个一样的问题：<a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">NFS mount System Call in linux</a><br>答主的意思是：</p>
+<blockquote>
+<p>首先，对于没有看到任何关于使用mount调用来挂载nfs的手册表示诧异。然后，深入到mount工具的源码实现，发现在挂载nfs时，解析对应的nfs挂载选项中有个Opt_addr，该字段对应挂载选项中的addr选项。为了使mount函数正常运行，应该在挂载选项中添加addr=x.x.x.x；</p>
+</blockquote>
+<p>原因很明显了，我们缺少了must选项addr，修改代码，添加该选项后，代码为：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>编译运行，啊哈，挂载成功！<br>至此问题解决。</p>
+<h3 id="附录"><a href="#附录" class="headerlink" title="附录"></a><strong>附录</strong></h3><p>附上测试代码如下：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/mount.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;errno.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;string.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* src  = <span class="string">"10.10.123.101:/vbumjko7"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* trgt = <span class="string">"/mnt/test_nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* type = <span class="string">"nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">unsigned</span> <span class="keyword">long</span> mntflags = <span class="number">0</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* opts = <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">int</span> result = mount(src, trgt, type, mntflags, opts);</span><br><span class="line"></span><br><span class="line">   <span class="keyword">if</span> (result == <span class="number">0</span>)</span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Mount created at %s...\n"</span>, trgt);</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Press &lt;return&gt; to unmount the volume: "</span>);</span><br><span class="line">      getchar();</span><br><span class="line">      umount(trgt);</span><br><span class="line">   &#125;</span><br><span class="line">   <span class="keyword">else</span></span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Error : Failed to mount %s\n"</span></span><br><span class="line">             <span class="string">"Reason: %s [%d]\n"</span>,</span><br><span class="line">             src, strerror(errno), errno);</span><br><span class="line">      <span class="keyword">return</span> <span class="number">-1</span>;</span><br><span class="line">   &#125;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
+<li><a href="http://man7.org/linux/man-pages/man2/mount.2.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man2/mount.2.html</a></li>
+<li><a href="http://man7.org/linux/man-pages/man5/nfs.5.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man5/nfs.5.html</a></li>
+<li><a href="https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/" target="_blank" rel="noopener">https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/</a></li>
+<li><a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>底层技术</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+        <tag>NFS</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>『译』InnoDB中的数据组织</title>
+    <url>/2017/10/31/innodb-data-organization/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>本文翻译自《Data Organization in InnoDB》，原文属于InnoDB官方blog，后来Oracle修改了官方blog的地址，没有找到原文链接，如果哪位找到原文链接，烦请告知。另本人水平有限，如发现翻译错误或有问题的地方，也欢迎指出。</p>
+<a id="more"></a>
+
+<h3 id="简介"><a href="#简介" class="headerlink" title="简介"></a><strong>简介</strong></h3><p>InnoDB会创建很多种文件，这里我们来看一下类似表空间、页、段、扇区这类的逻辑数据组织。我们将会详细介绍这几种数据组织类型，并讨论它们之间的关系。最后，我们会看一下InnoDB存储引擎内部的数据布局的高级视图。</p>
+<h3 id="文件"><a href="#文件" class="headerlink" title="文件"></a><strong>文件</strong></h3><p>MySQL将所有数据都保存在自己的data目录中，data目录可以通过命令参数–data-dir来设置，也可以在配置文件中指定。详细请参考MySQL的命令选项介绍。</p>
+<p>默认情况下，InnoDB在初始化的时候，会在data目录下创建三个比较重要的文件：ibdata1、ib_logfile0、ib_logfile1。其中，ibdata1文件用来保存系统数据和用户数据，ib_logfile0和ib_logfile1是redolog文件。这三个文件的存放位置以及各自的文件大小都是可配置的。可以参考InnoDB配置。</p>
+<p>ibdata1文件属于表空间id为0的系统表空间，系统表空间可以拥有一个或多个数据文件。在MySQL 5.6版本，只有系统表空间可以拥有多个数据文件，其他所有表空间都只能有一个数据文件，而且，也只有系统表空间可以拥有多个表，其他表空间都只能有一个表。 数据文件ibdata和redolog文件ib_logfile在内存中使用C语言结构体file_node_t来表示。</p>
+<h3 id="表空间"><a href="#表空间" class="headerlink" title="表空间"></a><strong>表空间</strong></h3><p>默认情况下，InnoDB只包含一个ID为0的系统表空间，可以使用使用innodb_file_per_table来创建更多的系统表空间。在MySQL 5.6中，这个参数默认为ON，也就是说，每个表在自己的表空间中拥有独立的数据文件。</p>
+<p>在InnoDB源文件storage/innobase/fil/fil0fil.cc的注释中，解释了表空间和数据文件之间的关系：</p>
+<blockquote>
+<p>一个表空间包含了一系列的文件。由于最后的未完成的block未被使用，因此，这些文件的大小不一定会被block大小整除。当一个新文件被追加到表空间时，文件大小的最大值就已经被指定了。为了避免表空间大小不够时动态的扩展文件大小，在文件创建的时候，就把文件大小预扩展到其最大值。</p>
+</blockquote>
+<p>上面最后一句话，避免动态扩展而预分配只应用与redolog文件，对于数据文件来说，还是动态扩展的。当然，跟前面说的一样，只有系统表空间可以包含多个数据文件。</p>
+<p>这里需要明确一点：即使系统表空间可以包含多个数据文件，这些文件还是被当成一个串联起来的大文件使用。因此，这些文件的顺序就显得比较重要了。</p>
+<h3 id="页（page）"><a href="#页（page）" class="headerlink" title="页（page）"></a><strong>页（page）</strong></h3><p>一个数据文件在逻辑上被分成多个大小一致的page，第一个数据文件的第一个page的ID标记为0，下一个page ID为1，以此类推。在一个表空间中，一个page ID（page_no）唯一标识一个page。同样，一个表空间ID（space_id）唯一标识一个表空间。因此，在InnoDB中，使用二元组(space_id, page_no)来唯一标识一个page，使用三元组(space_id, page_no, page_offset)来访问任意位置，其中page_offset是page内的字节偏移。</p>
+<p>一个表空间中不同数据文件的各个page有什么关系呢？在源码中的另一段注释是这样描述的：</p>
+<blockquote>
+<p>使用一个32位无符号整数来确定一个表空间中一个block的位置，由于表空间中的所有数据文件是被串联起来的，因此，在这个串联的大文件中，地址为n的block就是文件中的第n个block（第一个block地址为0，文件末尾未完成的block碎片不会被计数）。可以在这个链的尾部追加新文件来扩展表空间。</p>
+</blockquote>
+<p>上面这段话说明，在一个表空间中，并不是所有数据文件的第一个page_no都是0，只有第一个数据文件的第一个page的page_no才为0。上面也提到，page_no是一个32位的无符号整数，所以page_no在磁盘上被存储为4个字节。</p>
+<p>每一个page都有一个头部结构page_header_t。详细请参考另一篇blog。</p>
+<h3 id="扇区-extents"><a href="#扇区-extents" class="headerlink" title="扇区(extents)"></a><strong>扇区(extents)</strong></h3><p>一个扇区是1MB连续的page，每个扇区的大小定义为：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">define</span> FSP_EXTENT_SIZE (1048576U/UNIV_PAGE_SIZE)</span></span><br></pre></td></tr></table></figure>
+
+<p>其中，UNIV_PAGE_SIZE是一个编译时常量，从5.6开始，是一个全局变量。一个扇区page的个数，取决于使用的page大小。如果page大小是16KB（默认），那么一个扇区就包含64个page。</p>
+<h3 id="page的类型"><a href="#page的类型" class="headerlink" title="page的类型"></a><strong>page的类型</strong></h3><p>一个page有多种用途，page的类型标识着page的使用目的。page类型存储在每个page的头部中，page类型定义在源文件：storeage/innobase/include/fil0fil.h.  下面的表格，提供了page类型的简单描述。</p>
+<table>
+<thead>
+<tr>
+<th>page类型</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>FIL_PAGE_INDEX</td>
+<td>该类型page是一个B-tree节点</td>
+</tr>
+<tr>
+<td>FIL_PAGE_UNDO_LOG</td>
+<td>该类型page存储undo log</td>
+</tr>
+<tr>
+<td>FIL_PAGE_INODE</td>
+<td>该类型page包含一组fseg_inode_t对象</td>
+</tr>
+<tr>
+<td>FIL_PAGE_IBUF_FREE_LIST</td>
+<td>该类型page在插入buffer和修改buffer的空闲列表中</td>
+</tr>
+<tr>
+<td>FIL_PAGE_TYPE_ALLOCATED</td>
+<td>该类型page属于新分配的page</td>
+</tr>
+<tr>
+<td>FIL_PAGE_IBUF_BITMAP</td>
+<td>该类型page保存插入buffer和修改buffer的bitmap信息</td>
+</tr>
+<tr>
+<td>FIL_PAGE_TYPE_SYS</td>
+<td>系统page</td>
+</tr>
+<tr>
+<td>FIL_PAGE_TYPE_TRX_SYS</td>
+<td>事务系统数据</td>
+</tr>
+<tr>
+<td>FIL_PAGE_TYPE_FSP_HEADER</td>
+<td>文件空间头部</td>
+</tr>
+<tr>
+<td>FIL_PAGE_TYPE_XDES</td>
+<td>扇区描述符page</td>
+</tr>
+<tr>
+<td>FIL_PAGE_TYPE_BLOB</td>
+<td>未压缩的blob page</td>
+</tr>
+<tr>
+<td>FIL_PAGE_TYPE_ZBLOB</td>
+<td>第一个压缩的blob page</td>
+</tr>
+<tr>
+<td>FIL_PAGE_TYPE_ZBLOB2</td>
+<td>子序列压缩的blob page</td>
+</tr>
+</tbody></table>
+<p>每一种类型的page都有不同的用途。详细探讨每种page的用途已经超出了本文的范围。到这里为止，已经可以充分的看到，所有的page都会有一个page头部，在page头部存储着头部类型，page的类型决定的page内部数据的布局和内容格式。</p>
+<h3 id="表空间头部"><a href="#表空间头部" class="headerlink" title="表空间头部"></a><strong>表空间头部</strong></h3><p>每一个表空间，都有一个fsp_header_t类型的头部信息，这个数据结构存储在表空间的第一个page中。主要包括以下内容：</p>
+<ol>
+<li>表空间ID（space_id）</li>
+<li>表空间中page的个数</li>
+<li>空闲extents链表</li>
+<li>不属于任何段的完整extents链表</li>
+<li>不属于任何段的部分完整或者部分空闲的extents链表</li>
+<li>包含段头部的page列表，预留了所有段的inode slots</li>
+<li>包含段头部的page列表，预留了非所有段的inode slots</li>
+</ol>
+<p><img src="/images/1b8382c8-10d1-4107-b493-1d7958b8e3a6.jpg" alt="fsp_header_t结构体"></p>
+<p>通过表空间头部，可以直接访问表空间中可使用段的链表。表空间头部占用的字节数在宏FSP_HEADER_SIZE定义，大小等于16 × 7 = 112字节。</p>
+<h3 id="表空间预留page"><a href="#表空间预留page" class="headerlink" title="表空间预留page"></a><strong>表空间预留page</strong></h3><p>前面已经提到，Innodb存在一个ID为0的系统表空间。这是一个特殊的表空间，在MySQL运行期间会一直保持打开状态。系统表空间的前面一些page会预留给系统内部使用。这些信息可以在头文件storage/innobase/include/fsp0types.h。下面列出一些简单的描述。</p>
+<table>
+<thead>
+<tr>
+<th>page number</th>
+<th>page name</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>0</td>
+<td>FSP_XDES_OFFSET</td>
+<td>extent表述符page</td>
+</tr>
+<tr>
+<td>1</td>
+<td>FSP_IBUF_BITMAP_OFFSET</td>
+<td>插入buffer的bitmap page</td>
+</tr>
+<tr>
+<td>2</td>
+<td>FSP_FIRST_INODE_PAGE_NUM</td>
+<td>第一个inode节点的page 号</td>
+</tr>
+<tr>
+<td>3</td>
+<td>FSP_IBUF_HEADER_PAGE_NO</td>
+<td>系统表空间中插入buffer的头部page</td>
+</tr>
+<tr>
+<td>4</td>
+<td>FSP_IBUF_TREE_ROOT_PAGE_NO</td>
+<td>系统表空间中插入buffer的root page</td>
+</tr>
+<tr>
+<td>5</td>
+<td>FSP_TRX_SYS_PAGE_NO</td>
+<td>系统表空间中事务系统的头部</td>
+</tr>
+<tr>
+<td>6</td>
+<td>FSP_FIRST_RSEG_PAGE_NO</td>
+<td>系统表空间中第一个回滚段的page</td>
+</tr>
+<tr>
+<td>7</td>
+<td>FSP_DICT_HDR_PAGE_NO</td>
+<td>系统表空间中数据字段的头部page</td>
+</tr>
+</tbody></table>
+<p>当配置项innodb_file_per_table开启的时候，每一个表会有一个独立的系统表空间对应一个数据文件。函数dict_build_table_def_step()—-&gt;dict_build_tablespace_for_table()中相关注释如下：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="comment">/* We create a new single-table tablespace for the table.</span></span><br><span class="line"><span class="comment">   We initially let it be 4 pages:</span></span><br><span class="line"><span class="comment">   - page 0 is the fsp header and an extent descriptor page,</span></span><br><span class="line"><span class="comment">   - page 1 is an ibuf bitmap page,</span></span><br><span class="line"><span class="comment">   - page 2 is the first inode page,</span></span><br><span class="line"><span class="comment">   - page 3 will contain the root of the clustered index of the table we create here. </span></span><br><span class="line"><span class="comment">*/</span></span><br></pre></td></tr></table></figure>
+
+<h3 id="文件段"><a href="#文件段" class="headerlink" title="文件段"></a><strong>文件段</strong></h3><p>一个表空间包含很多文件段，文件段是一个逻辑上的概念。每个段都有一个指向该文件段inode节点(fseg_inode_t)的段头部(fseg_header_t)。文件段头部包括以下信息：</p>
+<ol>
+<li>inode属于哪个表空间</li>
+<li>inode的page_no</li>
+<li>inode偏移的字节数</li>
+<li>文件段头部的长度（以字节为单位）</li>
+</ol>
+<p>fseg_inode_t对象包括以下信息：</p>
+<ol>
+<li>inode所属的段id</li>
+<li>完整的extents列表</li>
+<li>这个段的空闲extents列表</li>
+<li>部分满/空闲的extents列表</li>
+<li>属于该段的独立page数组，数组的大小是一个extent的一半。</li>
+</ol>
+<p>当一个段增长的时候，它会从所属的表空间中获取空闲的extent或page。</p>
+<h3 id="表"><a href="#表" class="headerlink" title="表"></a><strong>表</strong></h3><p>当一个表被创建的时候，innodb内部会创建一个BTree结构的聚簇索引。它包括连个文件段，一个存储非叶子page，另一个存储叶子page。</p>
+<p>给定一个表，聚簇索引的Btree的root page会从数据字典中获取。因此，在innodb中，每个表存在于一个表空间中，它包括一个BTree（聚簇索引），这个BTRee有两个文件段，每个文件段可以包含很多extents，每个extent包括1MB的连续page。</p>
+<h3 id="小结"><a href="#小结" class="headerlink" title="小结"></a><strong>小结</strong></h3><p>本文详细讨论了InnoDB内部的数据组织。首先介绍了InnoDB创建的文件类型，接着介绍了各种逻辑概念，包括表空间、page、page类型、extents、段和表，也介绍了这些逻辑概念之间的相互关系。</p>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+        <tag>InnDB</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>C语言中varargs引起的一个小bug</title>
+    <url>/2018/07/08/one-bug-of-varargs-in-c-language/</url>
+    <content><![CDATA[<h3 id="问题描述及定位"><a href="#问题描述及定位" class="headerlink" title="问题描述及定位"></a><strong>问题描述及定位</strong></h3><p>上周做测试时遇到一个比较奇怪的问题，也不算是bug，只能说是c语言的缺陷。具体是这样的，我们自己封装了一个字符串的append函数，参数是可变参数列表，最后一个参数必须是NULL结尾，原型如下：</p>
+<a id="more"></a>
+
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="function"><span class="keyword">void</span> <span class="title">append</span><span class="params">(<span class="built_in">std</span>::<span class="built_in">string</span>&amp; builder, <span class="keyword">const</span> <span class="keyword">char</span>* arg0,...)</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">    <span class="keyword">char</span>* arg_str;</span><br><span class="line">    builder.append(arg0);</span><br><span class="line">    va_list arg_ptr;</span><br><span class="line">    va_start(arg_ptr, arg0);</span><br><span class="line">    <span class="keyword">while</span> ((arg_str=va_arg(arg_ptr,<span class="keyword">char</span>*)))&#123;</span><br><span class="line">        builder.append(arg_str);</span><br><span class="line">    &#125;</span><br><span class="line">    va_end(arg_ptr);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>我们的习惯用法是：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="built_in">string</span> dstStr;</span><br><span class="line">append(dstStr, <span class="string">"abc"</span>, str1, <span class="string">"bcd"</span>, str2, <span class="string">" "</span>, <span class="literal">NULL</span>);</span><br></pre></td></tr></table></figure>
+
+<p>但是，在不同编译环境下，编译之后的可执行文件在执行到最后一个NULL参数时，会继续执行append，导致coredump。gdb分析具体堆栈信息：</p>
+<p><img src="/images/6968e26f-91ec-4e03-a8f3-21d9d343f1dd.jpg" alt="stack1"></p>
+<p>查看库函数：/usr/lib/gcc/x86_64-redhat-linux/4.4.6/../../../../include/c++/4.4.6/bits/basic_string.h:871</p>
+<p><img src="/images/c6aaaf5d-90ef-465e-90d1-68447ba97d47.png" alt="basic_string"></p>
+<p>/usr/lib/gcc/x86_64-redhat-linux/4.4.6/../../../../include/c++/4.4.6/bits/char_traits.h:263</p>
+<p><img src="/images/4ff24903-db3e-47f0-8194-810257873bfc.png" alt="char_traits"></p>
+<p>可以发现，在求字符串长度时导致coredump，输出该字符串时，显示地址越界。</p>
+<p>使用gdb一步一步调试时发现，NULL在做为参数传递给append时，被转成了一个非0的值，导致本该遇到NULL就终止的while循环，继续运行append(NULL)，导致coredump，调试信息如下：</p>
+<p><img src="/images/7e9d33e4-8744-47f2-8e48-f856fcec47d7.jpg" alt="gdb"></p>
+<p>（可以手动测试append(NULL), 会报同样的段错误，堆栈信息类似）</p>
+<h3 id="问题根本原因"><a href="#问题根本原因" class="headerlink" title="问题根本原因"></a><strong>问题根本原因</strong></h3><p>搜索相关资料发现，在不同环境下，当sizeof(int) != sizeof(char *)时，有些编译器会将NULL当成普通的int 0（4字节）来传递，但是在va_arg中，又把0当中char *（8字节）来取值，导致出现上述while循环不会终止的问题。</p>
+<blockquote>
+<p>You should really be passing (char*)NULL, as NULL may be defined as a plain 0 and the compiler has no way to implicitly know it’s a pointer value without a cast. This is especially important if sizeof(int) != sizeof(char *) which is not that uncommon with 64-bit implementations.</p>
+</blockquote>
+<h3 id="解决方法"><a href="#解决方法" class="headerlink" title="解决方法"></a><strong>解决方法</strong></h3><ul>
+<li>在调用函数时，结尾的NULL参数前加char*做强制类型转换。类似这样：</li>
+</ul>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line">append(dstStr, <span class="string">"abc"</span>, str1, <span class="string">"bcd"</span>, str2, <span class="string">" "</span>, (<span class="keyword">char</span> *)<span class="literal">NULL</span>);</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li>修改while循环的终止条件，显示的使用 != NULL 条件：</li>
+</ul>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">while</span> ((arg_str=va_arg(arg_ptr,<span class="keyword">char</span>*)) != <span class="literal">NULL</span>)</span><br></pre></td></tr></table></figure>
+
+<p>以下是c-faq给出的使用示例：</p>
+<p><img src="/images/6c3b5034-b9e9-4f61-a815-53a0f2396f4c.png" alt="vstrcat"></p>
+<h3 id="其他类似情况"><a href="#其他类似情况" class="headerlink" title="其他类似情况"></a><strong>其他类似情况</strong></h3><p>fork之后的子进程中，需要使用exec函数族时，如果需要传参数列表，也需要在NULL前加char*。比如：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">execl(&quot;/bin/sh&quot;, &quot;sh&quot;, &quot;-c&quot;, &quot;date&quot;, (char *)0);</span><br></pre></td></tr></table></figure>
+
+<h3 id="参考"><a href="#参考" class="headerlink" title="参考"></a><strong>参考</strong></h3><ul>
+<li><a href="https://stackoverflow.com/questions/9936249/va-list-and-va-arg" target="_blank" rel="noopener">https://stackoverflow.com/questions/9936249/va-list-and-va-arg</a></li>
+<li><a href="http://c-faq.com/~scs/cgi-bin/faqcat.cgi?sec=varargs" target="_blank" rel="noopener">http://c-faq.com/~scs/cgi-bin/faqcat.cgi?sec=varargs</a></li>
+<li><a href="http://c-faq.com/~scs/cgi-bin/faqcat.cgi?sec=null#null2" target="_blank" rel="noopener">http://c-faq.com/~scs/cgi-bin/faqcat.cgi?sec=null#null2</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>C语言</category>
+      </categories>
+      <tags>
+        <tag>C</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>手动解析previous_gtids_log_event</title>
+    <url>/2017/07/03/parse_previous_gtids_log_event/</url>
+    <content><![CDATA[<h2 id="开始"><a href="#开始" class="headerlink" title="开始"></a>开始</h2><p>最近在做的事情，需要解析MySQL binlog中的previous_gtids，首先想到两种方法：</p>
+<ol>
+<li>google搜现成开源的解析代码；</li>
+<li>移植MySQL内核中关于previous_gtid解析的代码；</li>
+</ol>
+<h2 id="探索"><a href="#探索" class="headerlink" title="探索"></a>探索</h2><p>移植MySQL代码这个事情，本身工作量比较大，而且MySQL中关于GTID的类以及文件有好多，我只是需要一个解析previous_gtids_log_event的工具，没必要搞这么重，所以方法2是下下策。<br>然后很自然的去google搜索开源解析代码，本以为解析previous_gtids_log_event这种事情，网上应该有很多现成的代码可以拷贝，结果google不但没有找到，而且连previous_gtids_log_event的格式相关的说明都没有搜到（可能是我不会用google）。方法一行不通。</p>
+<a id="more"></a>
+
+<p>没办法，只能硬着头皮看MySQL源码中关于previous_gtids_log_event中相关的解析方法。<br>在MySQL中，所有的event都有一个公共的基类log_event，这个基类有个read_event函数，在解析event的时候，通过read_event函数读出一个event的数据，然后根据头部中的type字段，强制类型转换为对应type的event，好像也没有涉及到解析的过程。这可咋办？<br>源码中不可能没有线索，所以耐着性子看代码，终于发现一个线索：在log_event.cc文件中定义previous_gtids_log_event成员函数的地方，找到了get_str()函数。这个20行左右的函数作用是将previous_gtids_log_event以指定的格式转换为字符串。</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">char</span> *Previous_gtids_log_event::get_str(</span><br><span class="line">  <span class="keyword">size_t</span> *length_p, <span class="keyword">const</span> Gtid_set::String_format *string_format) <span class="keyword">const</span></span><br><span class="line">&#123;</span><br><span class="line">  DBUG_ENTER(<span class="string">"Previous_gtids_log_event::get_str(size_t *)"</span>);</span><br><span class="line">  <span class="function">Sid_map <span class="title">sid_map</span><span class="params">(<span class="literal">NULL</span>)</span></span>;</span><br><span class="line">  <span class="function">Gtid_set <span class="title">set</span><span class="params">(&amp;sid_map, <span class="literal">NULL</span>)</span></span>;</span><br><span class="line">  DBUG_PRINT(<span class="string">"info"</span>, (<span class="string">"temp_buf=%p buf=%p"</span>, temp_buf, buf));</span><br><span class="line">  <span class="comment">//将previous_gtids_log_event原始数据转为mysql内部数据结构，这里就是解析编码后的数据</span></span><br><span class="line">  <span class="keyword">if</span> (<span class="built_in">set</span>.add_gtid_encoding(buf, buf_size) != RETURN_STATUS_OK)</span><br><span class="line">    DBUG_RETURN(<span class="literal">NULL</span>);</span><br><span class="line">  <span class="built_in">set</span>.dbug_print(<span class="string">"set"</span>);</span><br><span class="line">  <span class="keyword">size_t</span> length= <span class="built_in">set</span>.get_string_length(string_format);</span><br><span class="line">  DBUG_PRINT(<span class="string">"info"</span>, (<span class="string">"string length= %lu"</span>, (ulong) length));</span><br><span class="line">  <span class="keyword">char</span>* str= (<span class="keyword">char</span> *)my_malloc(length + <span class="number">1</span>, MYF(MY_WME));</span><br><span class="line">  <span class="keyword">if</span> (str != <span class="literal">NULL</span>)</span><br><span class="line">  &#123;</span><br><span class="line">    <span class="built_in">set</span>.to_string(str, string_format);</span><br><span class="line">    <span class="keyword">if</span> (length_p != <span class="literal">NULL</span>)</span><br><span class="line">      *length_p= length;</span><br><span class="line">  &#125;</span><br><span class="line">  DBUG_RETURN(str);</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h2 id="深入"><a href="#深入" class="headerlink" title="深入"></a>深入</h2><p>继续跟进到add_gtid_encoding函数，可以看到，在Gtid_set类中的add_gtid_encoding函数其实就是解析了previous_gtids_log_event：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line">enum_return_status Gtid_set::add_gtid_encoding(<span class="keyword">const</span> uchar *encoded,</span><br><span class="line">                                               <span class="keyword">size_t</span> length,</span><br><span class="line">                                               <span class="keyword">size_t</span> *actual_length)</span><br><span class="line">&#123;</span><br><span class="line">  DBUG_ENTER(<span class="string">"Gtid_set::add_gtid_encoding(const uchar *, size_t)"</span>);</span><br><span class="line">  ......</span><br><span class="line">  <span class="keyword">size_t</span> pos= <span class="number">0</span>;</span><br><span class="line">  uint64 n_sids;</span><br><span class="line">  ......</span><br><span class="line">  <span class="comment">// read number of SIDs</span></span><br><span class="line">  <span class="keyword">if</span> (length &lt; <span class="number">8</span>)</span><br><span class="line">  &#123;</span><br><span class="line">    DBUG_PRINT(<span class="string">"error"</span>, (<span class="string">"(length=%lu) &lt; 8"</span>, (ulong) length));</span><br><span class="line">    <span class="keyword">goto</span> report_error;</span><br><span class="line">  &#125;</span><br><span class="line">  n_sids= uint8korr(encoded);<span class="comment">//获取uuid的个数</span></span><br><span class="line">  pos+= <span class="number">8</span>;</span><br><span class="line">  <span class="comment">// iterate over SIDs</span></span><br><span class="line">  <span class="keyword">for</span> (uint i= <span class="number">0</span>; i &lt; n_sids; i++)<span class="comment">//遍历每一个uuid</span></span><br><span class="line">  &#123;</span><br><span class="line">    <span class="comment">// read SID and number of intervals</span></span><br><span class="line">    <span class="keyword">if</span> (length - pos &lt; <span class="number">16</span> + <span class="number">8</span>)<span class="comment">//长度判断</span></span><br><span class="line">    &#123;</span><br><span class="line">      DBUG_PRINT(<span class="string">"error"</span>, (<span class="string">"(length=%lu) - (pos=%lu) &lt; 16 + 8. "</span></span><br><span class="line">                           <span class="string">"[n_sids=%llu i=%u]"</span>,</span><br><span class="line">                           (ulong) length, (ulong) pos, n_sids, i));</span><br><span class="line">      <span class="keyword">goto</span> report_error;</span><br><span class="line">    &#125;</span><br><span class="line">    rpl_sid sid;</span><br><span class="line">    sid.copy_from(encoded + pos);</span><br><span class="line">    pos+= <span class="number">16</span>;</span><br><span class="line">    uint64 n_intervals= uint8korr(encoded + pos);<span class="comment">//获取该uuid下，gtid区间的个数</span></span><br><span class="line">    pos+= <span class="number">8</span>;</span><br><span class="line">    ......</span><br><span class="line">    <span class="comment">// iterate over intervals</span></span><br><span class="line">    <span class="keyword">if</span> (length - pos &lt; <span class="number">2</span> * <span class="number">8</span> * n_intervals)<span class="comment">//长度判断</span></span><br><span class="line">    &#123;</span><br><span class="line">      DBUG_PRINT(<span class="string">"error"</span>, (<span class="string">"(length=%lu) - (pos=%lu) &lt; 2 * 8 * (n_intervals=%llu)"</span>,</span><br><span class="line">                           (ulong) length, (ulong) pos, n_intervals));</span><br><span class="line">      <span class="keyword">goto</span> report_error;</span><br><span class="line">    &#125;</span><br><span class="line">    <span class="function">Interval_iterator <span class="title">ivit</span><span class="params">(<span class="keyword">this</span>, sidno)</span></span>;</span><br><span class="line">    rpl_gno last= <span class="number">0</span>;</span><br><span class="line">    <span class="keyword">for</span> (uint i= <span class="number">0</span>; i &lt; n_intervals; i++)<span class="comment">//遍历每一个gtid区间，注意：区间是左闭右开的 [start, end)</span></span><br><span class="line">    &#123;</span><br><span class="line">      <span class="comment">// read one interval</span></span><br><span class="line">      rpl_gno start= sint8korr(encoded + pos);<span class="comment">//解析区间的开始gtid</span></span><br><span class="line">      pos+= <span class="number">8</span>;</span><br><span class="line">      rpl_gno end= sint8korr(encoded + pos);<span class="comment">//解析区间的结束gtid</span></span><br><span class="line">      pos+= <span class="number">8</span>;</span><br><span class="line">      <span class="keyword">if</span> (start &lt;= last || end &lt;= start)<span class="comment">//校验区间</span></span><br><span class="line">      &#123;</span><br><span class="line">        DBUG_PRINT(<span class="string">"error"</span>, (<span class="string">"last=%lld start=%lld end=%lld"</span>,</span><br><span class="line">                             last, start, end));</span><br><span class="line">        <span class="keyword">goto</span> report_error;</span><br><span class="line">      &#125;</span><br><span class="line">      last= end;</span><br><span class="line">      .....</span><br><span class="line">    &#125;</span><br><span class="line">  &#125;</span><br><span class="line">  .....</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>根据以上代码，很容易得到previous_gtid的格式如下：【event body格式，省略了前面19字节的common header】</p>
+<figure class="highlight bash"><table><tr><td class="code"><pre><span class="line">+-------+--------+----------+-------------+--------------+---------------+-------------------------</span><br><span class="line">|sid_num|sid1    |interv_num|interv1_start|interv1_end   |interv2_start  |interv2_end |sid2    |...</span><br><span class="line">|8 bytes|16 bytes|8 bytes   |8 bytes      |8 bytes       |8 bytes        |8 bytes     |16 bytes|...</span><br><span class="line">+-------+--------+----------+-------------+--------------+---------------+-------------------------</span><br></pre></td></tr></table></figure>
+
+<h2 id="结果"><a href="#结果" class="headerlink" title="结果"></a>结果</h2><p>previous_gtids_log_event格式中，post_header长度为0， 所以除去前面19字节的common header, 剩余的body部分就是要解析的数据部分。<br>将mysql代码转为手动解析的代码如下：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line">......</span><br><span class="line"><span class="keyword">int64_t</span> ev_body_len = ev-&gt;ev_length_ - BINLOG_EVENT_MIN_HEAD_LEN;</span><br><span class="line"><span class="keyword">unsigned</span> <span class="keyword">char</span>* buf = <span class="keyword">new</span> <span class="keyword">unsigned</span> <span class="keyword">char</span>[ev_body_len + <span class="number">1</span>];</span><br><span class="line"><span class="keyword">int32_t</span> rc = fread(buf, <span class="number">1</span>, ev_body_len, fd_);</span><br><span class="line">......</span><br><span class="line"><span class="comment">// read number of SIDs</span></span><br><span class="line"><span class="keyword">if</span> (ev_body_len &lt; <span class="number">8</span>)</span><br><span class="line">&#123;</span><br><span class="line">    <span class="comment">//error process</span></span><br><span class="line">&#125;</span><br><span class="line"></span><br><span class="line"><span class="comment">//get n_sids</span></span><br><span class="line"><span class="keyword">decode_uint64_t</span>(buf, &amp;n_sids);<span class="comment">//解析uint_64编码</span></span><br><span class="line">buf_pos += <span class="number">8</span>;</span><br><span class="line"></span><br><span class="line">previous_gtids_.clear();</span><br><span class="line"><span class="keyword">for</span> (<span class="keyword">uint64_t</span> i=<span class="number">0</span>; i&lt;n_sids; i++) &#123;</span><br><span class="line">    <span class="keyword">if</span> (ev_body_len - buf_pos &lt; <span class="number">16</span> + <span class="number">8</span>)&#123;</span><br><span class="line">        <span class="comment">//error process</span></span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="comment">//get sid</span></span><br><span class="line">    <span class="built_in">memcpy</span>(sid, buf + buf_pos, ENCODED_SID_LENGTH);</span><br><span class="line">    buf_pos += <span class="number">16</span>;</span><br><span class="line">    <span class="keyword">char</span> tmpbuf[<span class="number">37</span>];</span><br><span class="line">    sid_to_string(sid, tmpbuf);</span><br><span class="line">    uuid.assign(tmpbuf);</span><br><span class="line">    previous_gtids_.append(uuid + <span class="string">":"</span>);</span><br><span class="line"></span><br><span class="line">    <span class="comment">//get n_intervals</span></span><br><span class="line">    <span class="keyword">decode_uint64_t</span>(buf + buf_pos, &amp;n_intervals);</span><br><span class="line">    buf_pos += <span class="number">8</span>;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">if</span> (ev_body_len - buf_pos &lt; <span class="number">2</span> * <span class="number">8</span> * n_intervals) &#123;</span><br><span class="line">        <span class="comment">//error process</span></span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="comment">//iterate over intervals</span></span><br><span class="line">    last = <span class="number">0</span>;</span><br><span class="line">    <span class="keyword">for</span> (<span class="keyword">uint64_t</span> j=<span class="number">0</span>; j&lt;n_intervals; j++) &#123;</span><br><span class="line">        <span class="comment">//read one interval: [start, end)</span></span><br><span class="line">        <span class="comment">//get start</span></span><br><span class="line">        <span class="keyword">decode_int64_t</span>(buf + buf_pos, &amp;start);</span><br><span class="line">        buf_pos += <span class="number">8</span>;</span><br><span class="line"></span><br><span class="line">        <span class="comment">//save start to previous gtid set</span></span><br><span class="line">        gno_to_string(start, gno_start);</span><br><span class="line">        previous_gtids_.append(gno_start);</span><br><span class="line"></span><br><span class="line">        <span class="comment">//get end</span></span><br><span class="line">        <span class="keyword">decode_int64_t</span>(buf + buf_pos, &amp;end);      </span><br><span class="line">        buf_pos += <span class="number">8</span>;</span><br><span class="line"></span><br><span class="line">        <span class="comment">//check valid</span></span><br><span class="line">        <span class="keyword">if</span> (start &lt;= last || end &lt;= start) &#123;</span><br><span class="line">            <span class="comment">//error process</span></span><br><span class="line">        &#125;</span><br><span class="line">        last = end;</span><br><span class="line"></span><br><span class="line">        <span class="keyword">if</span> (start &lt; end - <span class="number">1</span>) &#123;</span><br><span class="line">            <span class="comment">//save end to previous gtid set</span></span><br><span class="line">            gno_to_string(end - <span class="number">1</span>, gno_end);</span><br><span class="line">            previous_gtids_.append(<span class="string">"-"</span> + gno_end);</span><br><span class="line">        &#125;</span><br><span class="line"></span><br><span class="line">        <span class="keyword">if</span> (j &lt; n_intervals - <span class="number">1</span>) &#123;</span><br><span class="line">            previous_gtids_.append(<span class="string">":"</span>);</span><br><span class="line">        &#125;</span><br><span class="line">    &#125;</span><br><span class="line"></span><br><span class="line">    <span class="keyword">if</span> (i &lt; n_sids - <span class="number">1</span>) &#123;</span><br><span class="line">        previous_gtids_.append(<span class="string">",\n"</span>);</span><br><span class="line">    &#125;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h2 id="靠谱参考："><a href="#靠谱参考：" class="headerlink" title="靠谱参考："></a>靠谱参考：</h2><ul>
+<li><a href="http://ikarishinjieva.github.io/blog/blog/2014/04/17/PREVIOUS_GTIDS_LOG_EVENT/" target="_blank" rel="noopener">http://ikarishinjieva.github.io/blog/blog/2014/04/17/PREVIOUS_GTIDS_LOG_EVENT/</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+        <tag>Gtid</tag>
+        <tag>LogEvent</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>『译』InnoDB的重做日志</title>
+    <url>/2017/11/17/redo-logging-in-innodb/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>同上篇一样，本文翻译自《Redo Logging in InnoDB》，原文属于InnoDB官方blog。我认为学习mysql一个比较好的方式应该是文档加源码，翻译此文的目的也是为了学习，有翻译错误的地方，烦请指出。</p>
+<a id="more"></a>
+
+<h3 id="简介"><a href="#简介" class="headerlink" title="简介"></a><strong>简介</strong></h3><p>InnoDB是一种平衡了高可靠和高性能的通用存储引擎。与其他关系型数据库一样，InnoDB支持事务和完全遵循ACID原则。其中，InnoDB的持久化是通过redolog来保证的。</p>
+<p>本文主要关注InnoDB的redolog子系统或者log子系统。主要从以下几个方面做详细介绍：</p>
+<ul>
+<li>全局log系统对象，主要提供对重要数据结构和信息的访问；</li>
+<li>迷你事务（简称mtr），redolog记录都是以迷你事务的形式来生成的；</li>
+<li>全局内存日志缓存，redolog会从mtr缓存中拷贝到全局内存日志缓存，该缓存会周期性的刷到磁盘上的redolog文件中；</li>
+<li>磁盘上的redolog文件及其高级内部结构；</li>
+<li>LSN的基本概念以及如何使用不同的LSN值来实现预写日志(WAL)；</li>
+</ul>
+<h3 id="重做日志的生成"><a href="#重做日志的生成" class="headerlink" title="重做日志的生成"></a><strong>重做日志的生成</strong></h3><p>在《InnoDB的数据组织》一文中，已经讲过，InnoDB的用户数据文件由一系列相同大小的page组成。这些page通过（space_id，page_no）这个二元组来唯一标识。每次如果需要读或者修改这些page，都要将其加载到内存中，因此，这时page就会有两份copy，一份在磁盘上，一份在内存中。这里介绍一下redolog产生过程中的高级步骤：</p>
+<ol>
+<li>任何需要对page做的修改，都会先修改内存中的page。那些在内存中已经被修改，但是还未刷到磁盘的page被标记为脏页；</li>
+<li>在局部的MTR缓存中生成相应的redolog，随后这些redolog会被拷贝到全局内存redolog缓存；</li>
+<li>从redolog缓存中把redolog记录写入磁盘上的redolog文件，接着会执行flush操作。写redolog文件和刷redolog文件到磁盘，这两个步骤是相互独立的。这里需要考虑操作系统对文件的缓存；</li>
+<li>脏页会在稍后的某个时刻执行checkpoint操作时刷到磁盘上；<br>以上几个步骤的顺序很重要，必须先刷对redolog的修改到磁盘，再刷对应的脏页到磁盘，这个就是预写日志的概念。</li>
+</ol>
+<p>生成的redolog记录中保存了在数据库恢复时可以执行的相同操作的必要信息。 因此，redolog记录中包含了原page的信息以及对page的修改信息。数据库恢复的时候会重新生成redolog记录中原page的脏页。</p>
+<h3 id="重做日志文件"><a href="#重做日志文件" class="headerlink" title="重做日志文件"></a><strong>重做日志文件</strong></h3><p>默认情况下，InnoDB会在MySQL的数据字典中创建两个redolog文件，ib_logfile0和ib_logfile1。在MySQL 5.6.8及以后的版本中，每个redolog文件的大小默认为48MB。用户可以通过修改innodb_log_file_size配置来控制redolog文件的大小，redolog文件的数量由配置项innodb_log_files_in_group来控制。 一个日志组由多个大小相同的日志文件组成，在MySQL 5.6中，InnoDB只支持一个日志组，这个会在以后再讨论。</p>
+<p>redolog使用一种循环的方式，也就是说，在写redolog的时候，会从第一个redolog文件的开始，一直写到结尾，然后继续写下一个redolog文件，以此类推直到最后一个redolog文件的结尾，然后再从第一个redolog文件开始继续写。</p>
+<p>redolog是由一系列固定大小为512字节的log块组成，每个redolog文件都有一个固定大小为2KB的文件头部。</p>
+<h3 id="重做日志文件头"><a href="#重做日志文件头" class="headerlink" title="重做日志文件头"></a><strong>重做日志文件头</strong></h3><p>redolog文件头部占4个log块，包含以下信息：</p>
+<ul>
+<li>前4个字节表示该redolog文件所属的log组号；</li>
+<li>紧接着的8个字节表示该redolog开始数据的LSN；</li>
+<li>第一个checkpoint字段位于第二个log块的开始；</li>
+<li>第二个checkpoint字段位于第四个log块的开始；</li>
+</ul>
+<p>checkpoint字段包括了：checkpoint序列号，checkpoint的LSN，校验和等其他信息。</p>
+<h3 id="log块"><a href="#log块" class="headerlink" title="log块"></a><strong>log块</strong></h3><p>一个redolog文件可以看成一系列的log块，除redolog文件头部的4个log块之外，其他所有log块都包含一个头部和一个尾部。头部的大小是12字节，尾部大小是4字节。log块头部包含以下信息：</p>
+<ul>
+<li>log块的编号，4个字节；</li>
+<li>该log块中log所占的字节数，2字节；</li>
+<li>该log块中第一个mtr log组的起始偏移，如果没有，则为0；</li>
+<li>该log块所属的checkpoint编号；</li>
+</ul>
+<p>log块尾部中包含了该log块内容的校验和信息。</p>
+<p>log块的格式如下图所示：</p>
+<p><img src="/images/e87fbc21-89f6-43d8-8f3d-12731fd027c3.jpg" alt="log块的格式"></p>
+<h3 id="日志序列号-LSN"><a href="#日志序列号-LSN" class="headerlink" title="日志序列号(LSN)"></a><strong>日志序列号(LSN)</strong></h3><p>日志序列号，简称LSN，是一个比较重要的概念。LSN可以看成是redolog的一个偏移信息，在InnoDB中LSN使用一个8字节的无符号整数来表示。有些LSN值需要特别注意，下表列出来一些将要讨论的LSN值。</p>
+<table>
+<thead>
+<tr>
+<th>LSN</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>log_sys-&gt;lsn</td>
+<td>下一个要生成的redolog记录的LSN值</td>
+</tr>
+<tr>
+<td>log_sys-&gt;flush_to_disk_lsn</td>
+<td>所有LSN小于该值的redolog都已经刷到磁盘上了</td>
+</tr>
+<tr>
+<td>log_sys-&gt;write_lsn</td>
+<td>当前正在运行的写操作将会写到该LSN</td>
+</tr>
+<tr>
+<td>log_sys–&gt;current_flush_lsn</td>
+<td>当前正在运行的写+flush操作将会写到该LSN</td>
+</tr>
+</tbody></table>
+<p>LSN是与脏页、redolog记录、redolog文件相联系的。每一个redolog记录被拷贝到内存的日志缓存中时，都会获得一个相关的LSN。当数据库页被修改的时候，会生成redolog记录，因此，每个数据库页也与一个LSN相关。page的LSN存储在page的头部结构中。页的LSN是指在页被刷到磁盘之前，redolog文件已经被刷到的LSN位置。</p>
+<h3 id="全局日志系统对象"><a href="#全局日志系统对象" class="headerlink" title="全局日志系统对象"></a><strong>全局日志系统对象</strong></h3><p>全局日志系统对象log_sys包含了关于innodb日志子系统的重要信息。这里只讨论下与redolog缓存和redolog文件相关的信息。全局变量log_sys标识了日志缓存当前的活动区域，该区域中保存了还未被安全的刷到磁盘上的redologs，也标识了redolog缓存将要写或者刷到redolog文件中的区域。<br>log_t结构体定义(5.7.17版本storage/innodbase/include/log0log.h:617)</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="comment">/** Redo log buffer */</span></span><br><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">log_t</span>&#123;</span></span><br><span class="line">    ....</span><br><span class="line">    <span class="keyword">lsn_t</span>        lsn;        <span class="comment">/*!&lt; log sequence number */</span></span><br><span class="line">    ulint        buf_free;    <span class="comment">/*!&lt; first free offset within the log buffer in use */</span></span><br><span class="line">    ....</span><br><span class="line">    byte*        buf_ptr;    <span class="comment">/*!&lt; unaligned log buffer, which should be of double of buf_size */</span></span><br><span class="line">    byte*        buf;        <span class="comment">/*!&lt; log buffer currently in use;</span></span><br><span class="line"><span class="comment">                    this could point to either the first</span></span><br><span class="line"><span class="comment">                    half of the aligned(buf_ptr) or the</span></span><br><span class="line"><span class="comment">                    second half in turns, so that log</span></span><br><span class="line"><span class="comment">                    write/flush to disk don't block</span></span><br><span class="line"><span class="comment">                    concurrent mtrs which will write</span></span><br><span class="line"><span class="comment">                    log to this buffer */</span></span><br><span class="line">    <span class="keyword">bool</span>        first_in_use;    <span class="comment">/*!&lt; true if buf points to the first</span></span><br><span class="line"><span class="comment">                    half of the aligned(buf_ptr), false</span></span><br><span class="line"><span class="comment">                    if the second half */</span></span><br><span class="line">    ulint        buf_size;    <span class="comment">/*!&lt; log buffer size of each in bytes */</span></span><br><span class="line">    ulint        max_buf_free;    <span class="comment">/*!&lt; recommended maximum value of</span></span><br><span class="line"><span class="comment">                    buf_free for the buffer in use, after</span></span><br><span class="line"><span class="comment">                    which the buffer is flushed */</span></span><br><span class="line">    ....</span><br><span class="line">    <span class="comment">/** The fields involved in the log buffer flush @&#123; */</span></span><br><span class="line">    ulint        buf_next_to_write;<span class="comment">/*!&lt; first offset in the log buffer</span></span><br><span class="line"><span class="comment">                    where the byte content may not exist</span></span><br><span class="line"><span class="comment">                    written to file, e.g., the start</span></span><br><span class="line"><span class="comment">                    offset of a log record catenated</span></span><br><span class="line"><span class="comment">                    later; this is advanced when a flush</span></span><br><span class="line"><span class="comment">                    operation is completed to all the log</span></span><br><span class="line"><span class="comment">                    groups */</span></span><br><span class="line">    <span class="keyword">volatile</span> <span class="keyword">bool</span>    is_extending;   <span class="comment">/*!&lt; this is set to true during extend the log buffer size */</span></span><br><span class="line">    <span class="keyword">lsn_t</span>        write_lsn;    <span class="comment">/*!&lt; last written lsn */</span></span><br><span class="line">    <span class="keyword">lsn_t</span>        current_flush_lsn;<span class="comment">/*!&lt; end lsn for the current runningwrite + flush operation */</span></span><br><span class="line">    <span class="keyword">lsn_t</span>        flushed_to_disk_lsn; <span class="comment">/*!&lt; how far we have written the log AND flushed to disk */</span></span><br><span class="line">    ....</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li>log_sys-&gt;buf成员指向内存中的redolog缓存，mtr_commits()操作会将redolog记录写入到该缓存中，缓存的大小由log_sys-&gt;buf_size给出；</li>
+<li>log_sys-&gt;buf_free指向内存中redolog缓存的空闲位置（下一个redolog记录将要写的位置）的偏移，这也是下一个redolog刷磁盘的结束位置；</li>
+<li>log_sys-&gt;buf_next_to_write指向还未写到redolog文件中的那些redolog记录的偏移，下次redolog刷盘的时候，将会从该位置开始刷，这也是下一个redolog刷盘的开始位置；</li>
+<li>log_sys-&gt;flushed_to_disk_lsn指那些已经落盘并flush过的LSN，因此，在这个LSN之前的所有redolog已经写到磁盘上了，是安全的。这个值总是小于等于log_sys-&gt;write_lsn和log_sys-&gt;lsn；</li>
+<li>log_sys-&gt;lsn表示当前的LSN，每次执行mtr_commit()操作，该值都会更新。mtr_commit()函数写一个MTR中的一串redolog记录到全局或者系统的redolog缓存中，该LSN值总是大于等于log_sys-&gt;flushed_to_disk_lsn和log_sys-&gt;write_lsn，该值是一个将要从log_sys-&gt;buf_free位置开始写的redolog记录的LSN；</li>
+<li>log_sys-&gt;write_lsn表示当前写redolog缓存操作结束时的LSN，该值总是小于等于log_sys-&gt;lsn，大于等于log_sys-&gt;flushed_to_disk_lsn；</li>
+<li>log_sys-&gt;current_flush_lsn表示当前正在运行的一个write+flush操作结束时的LSN，该值几乎等于log_sys-&gt;write_lsn；</li>
+</ul>
+<p>全局log_sys对象指向内存中redolog缓存和磁盘上redolog文件的各种位置，下图中展示了全局log_sys对象指向的这些位置，同时下图也清楚的表示了redolog缓存映射到redolog文件中某一个具体的位置。</p>
+<p><img src="/images/0563636c-5220-4150-ae0d-21882127233a.jpg" alt="redolog缓存和redolog文件之间的关系"></p>
+<h3 id="全局内存redolog缓存"><a href="#全局内存redolog缓存" class="headerlink" title="全局内存redolog缓存"></a><strong>全局内存redolog缓存</strong></h3><p>内存中的redolog缓存是全局的，用户产生的所有redolog事务都会写入到这个缓存中。缓存的大小可以通过配置项innodb_log_buffer_size配置项来指定，默认大小是8MB。</p>
+<p>当一个运行中的事务要修改数据库的时候，将会产生redolog并写入到该缓存中，当事务提交或者缓存满的时候，缓存中的redolog记录将会写或刷到redolog文件中。</p>
+<p>当redolog缓存满的时候，没有足够的空间执行mtr_commit()操作(该操作会拷贝一组redolog记录到redolog缓存中)，此时会有一个同步的log_buffer_flush_to_disk()操作将redolog缓存刷到redolog文件中，这个操作的偏移区间是从log_sys-&gt;buf_next_to_write到log_sys-&gt;buf_free，这个操作的LSN范围是从log_sys-&gt;flushed_to_disk_lsn到log_sys-&gt;lsn。</p>
+<h3 id="迷你事务-MTR"><a href="#迷你事务-MTR" class="headerlink" title="迷你事务(MTR)"></a><strong>迷你事务(MTR)</strong></h3><p>MTR用来生成redolog记录，将产生的redolog记录保存在一个局部缓存中。如果我们需要生成一组redolog记录（要么所有记录都刷到redolog文件，要么都没有刷到redolog文件），那么我们需要把它们在单个小的事务中执行。除了redolog记录之外，MTR还包含一个脏页的列表。<br>MTR的正常使用如下：</p>
+<ul>
+<li>创建一个mtr_t类型的MTR对象；</li>
+<li>使用mtr_start()函数开始一个MTR，此函数会初始化MTR缓存；</li>
+<li>使用mlog_write_ulint()系列函数生成redolog记录；</li>
+<li>使用mtr_commit()函数提交MTR，该函数会将redolog记录从MTR缓存拷贝到全局redolog缓存中，同时MTR中的脏页列表也会被添加到buffer pool的flush列表中；</li>
+</ul>
+<p>这里给出MTR定义的一个参考，其中mtr_t::log保存redolog记录的MTR缓存, mtr_t::memo包含MTR的脏页列表。</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="comment">/** Mini-transaction handle and buffer */</span></span><br><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">mtr_t</span> &#123;</span></span><br><span class="line">    <span class="comment">/** State variables of the mtr */</span></span><br><span class="line">    <span class="class"><span class="keyword">struct</span> <span class="title">Impl</span> &#123;</span></span><br><span class="line">        <span class="comment">/** memo stack for locks etc. */</span></span><br><span class="line">        <span class="keyword">mtr_buf_t</span>    m_memo;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** mini-transaction log */</span></span><br><span class="line">        <span class="keyword">mtr_buf_t</span>    m_log;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** true if mtr has made at least one buffer pool page dirty */</span></span><br><span class="line">        <span class="keyword">bool</span>        m_made_dirty;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** true if inside ibuf changes */</span></span><br><span class="line">        <span class="keyword">bool</span>        m_inside_ibuf;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** true if the mini-transaction modified buffer pool pages */</span></span><br><span class="line">        <span class="keyword">bool</span>        m_modifications;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** Count of how many page initial log records have been</span></span><br><span class="line"><span class="comment">        written to the mtr log */</span></span><br><span class="line">        <span class="keyword">ib_uint32_t</span>    m_n_log_recs;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** specifies which operations should be logged; default</span></span><br><span class="line"><span class="comment">        value MTR_LOG_ALL */</span></span><br><span class="line">        <span class="keyword">mtr_log_t</span>    m_log_mode;</span><br><span class="line"><span class="meta">#<span class="meta-keyword">ifdef</span> UNIV_DEBUG</span></span><br><span class="line">        <span class="comment">/** Persistent user tablespace associated with the</span></span><br><span class="line"><span class="comment">        mini-transaction, or 0 (TRX_SYS_SPACE) if none yet */</span></span><br><span class="line">        ulint        m_user_space_id;</span><br><span class="line"><span class="meta">#<span class="meta-keyword">endif</span> <span class="comment">/* UNIV_DEBUG */</span></span></span><br><span class="line">        <span class="comment">/** User tablespace that is being modified by the</span></span><br><span class="line"><span class="comment">        mini-transaction */</span></span><br><span class="line">        <span class="keyword">fil_space_t</span>*    m_user_space;</span><br><span class="line">        <span class="comment">/** Undo tablespace that is being modified by the</span></span><br><span class="line"><span class="comment">        mini-transaction */</span></span><br><span class="line">        <span class="keyword">fil_space_t</span>*    m_undo_space;</span><br><span class="line">        <span class="comment">/** System tablespace if it is being modified by the</span></span><br><span class="line"><span class="comment">        mini-transaction */</span></span><br><span class="line">        <span class="keyword">fil_space_t</span>*    m_sys_space;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** State of the transaction */</span></span><br><span class="line">        <span class="keyword">mtr_state_t</span>    m_state;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** Flush Observer */</span></span><br><span class="line">        FlushObserver*    m_flush_observer;</span><br><span class="line"></span><br><span class="line"><span class="meta">#<span class="meta-keyword">ifdef</span> UNIV_DEBUG</span></span><br><span class="line">        <span class="comment">/** For checking corruption. */</span></span><br><span class="line">        ulint        m_magic_n;</span><br><span class="line"><span class="meta">#<span class="meta-keyword">endif</span> <span class="comment">/* UNIV_DEBUG */</span></span></span><br><span class="line"></span><br><span class="line">        <span class="comment">/** Owning mini-transaction */</span></span><br><span class="line">        <span class="keyword">mtr_t</span>*        m_mtr;</span><br><span class="line">    &#125;;</span><br><span class="line">    ....</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="重做日志记录类型"><a href="#重做日志记录类型" class="headerlink" title="重做日志记录类型"></a><strong>重做日志记录类型</strong></h3><p>每当我们修改数据库的一个page，一个redo记录就会生成。该记录中既包含了page（物理redolog）中哪些信息被修改了，也包含了如何执行这个修改操作（逻辑redolog）。InnoDB既使用了物理redolog，也使用了逻辑redolog。</p>
+<p>为了理解这个概念，考虑一种操作，比如page重组。如果这个操作生成了一个物理redolog，很可能这个redolog记录的大小与page的大小相等。但是，相反的是InnoDB会为这个操作生成一个逻辑redolog记录，最重要的是这么做会减小redolog记录的大小。在逻辑重做日志记录代表一个页面重组操作的情况下，我们所需要的是唯一标识一个页面的信息，以及页面重组的操作的“类型”。</p>
+<p>因此，每一个redolog记录都有一个类型，在数据库恢复的时候，该类型能够帮助确定所使用或执行的函数，redolog记录必须包含函数所使用的所有参数。</p>
+<h3 id="重做日志记录的生命周期"><a href="#重做日志记录的生命周期" class="headerlink" title="重做日志记录的生命周期"></a><strong>重做日志记录的生命周期</strong></h3><p>一个redolog记录的生命周期如下：</p>
+<ul>
+<li>redolog记录首先被一个MTR产生，并记录在MTR的缓存中，它包含了数据库在恢复时的能够执行相同操作的所有必要信息；</li>
+<li>当mtr_commit()执行完毕后，redolog记录被保存在内存中的全局redolog缓存中，在需要的时候redolog缓存中的redolog记录会被刷到redolog文件中，为后续的redolog记录腾出空间；</li>
+<li>redolog记录关联一个指定的LSN，在执行mtr_commit()时，redolog记录从MTR缓存拷贝到全局日志缓存中时，这种绑定关系被建立起来；一旦这种关系确立后，redolog记录在redolog文件中的位置也就确定下来了；</li>
+<li>当执行wirte+flush操作时，redolog记录从redolog缓存刷到redolog文件中，此时redolog记录是持久化在磁盘上的；</li>
+<li>每一个redolog记录都有一个相关的脏页列表，这种关系是通过LSN建立的，redolog记录必须在它相关的脏页刷盘之前落盘，只有在相关的所有脏页落盘之后，redolog记录才可以被丢弃；</li>
+<li>在数据库恢复的时候，redolog记录可以用来重建相关的脏页列表；</li>
+</ul>
+<h3 id="总结"><a href="#总结" class="headerlink" title="总结"></a><strong>总结</strong></h3><p>本文提供了对InnoDB存储引擎redolog子系统的一个概览。redolog子系统中使用的主要数据结构是MTR, 内存中的redolog缓存以及磁盘上的redolog文件。InnoDB存储引擎跟踪许多LSN的值来保证预写日志（WAL）的正确性。</p>
+<p>对数据库管理系统来说，数据丢失是不可接受的，redolog子系统是保证数据不丢失的关键因素。由于redolog是在DML操作执行时同步生成的，因此必须保证redolog更有效的执行，同时redolog的大小需要尽可能的小。</p>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+        <tag>InnoDB</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>MySQL事务边界判断</title>
+    <url>/2017/10/21/transaction-boundary-fsm/</url>
+    <content><![CDATA[<h2 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h2><p>在MySQL的binlog中，一个事务一般由多个binlog events组成。在复制（或者崩溃恢复）等场景中，为了保证数据的一致性，需要根据当前已经存在binlog中的event来判断事务的完整性，以决定复制的位置（或者是否需要truncate不完整的事务）。MySQL 5.7开始，引入了类Transaction_boundary_parser来对一个完整事务做边界的判断。事务边界判断的源代码包含在sql/rpl_trx_boundary_parser.h(cc)两个文件中，以下内容是相关源码的分析。</p>
+<a id="more"></a>
+
+<h2 id="事件的边界类型"><a href="#事件的边界类型" class="headerlink" title="事件的边界类型"></a>事件的边界类型</h2><p>在rpl_trx_boundary_parser.h中，MySQL的binlog event被划分为以下几类：</p>
+<ul>
+<li>EVENT_BOUNDARY_TYPE_GTID，主要是Gtid_log_event；</li>
+<li>EVENT_BOUNDARY_TYPE_BEGIN_TRX， 包括Query_log_event(BEGIN)和Query_log_event(XA START)；</li>
+<li>EVENT_BOUNDARY_TYPE_END_TRX，包括Xid, Query_log_event(COMMIT), Query_log_event(ROLLBACK), XA_Prepare_log_event等事件；</li>
+<li>EVENT_BOUNDARY_TYPE_END_XA_TRX，主要是Query_log_event(XA ROLLBACK)；</li>
+<li>EVENT_BOUNDARY_TYPE_PRE_STATEMENT，包括User_var, Intvar， Rand上下文相关的event；</li>
+<li>EVENT_BOUNDARY_TYPE_STATEMENT， 包括其他所有的Query_log_events和DML事件（Rows, Load_data等）；</li>
+<li>EVENT_BOUNDARY_TYPE_IGNORE， 包括所有非DDL/DML事件，例如：Format_desc, Rotate, Incident, Previous_gtids, Stop等；</li>
+<li>EVENT_BOUNDARY_TYPE_ERROR, 非以上类型的event归结为此类；</li>
+</ul>
+<h2 id="事务序列的定义"><a href="#事务序列的定义" class="headerlink" title="事务序列的定义"></a>事务序列的定义</h2><h3 id="DDL事务序列"><a href="#DDL事务序列" class="headerlink" title="DDL事务序列"></a>DDL事务序列</h3><figure class="highlight bash"><table><tr><td class="code"><pre><span class="line">DDL-1: [GTID]</span><br><span class="line">DDL-2: [User] [Intvar] [Rand]</span><br><span class="line">DDL-3: Query</span><br></pre></td></tr></table></figure>
+
+<h3 id="DML事务序列"><a href="#DML事务序列" class="headerlink" title="DML事务序列"></a>DML事务序列</h3><figure class="highlight bash"><table><tr><td class="code"><pre><span class="line">DML-1: [GTID]</span><br><span class="line">DML-2: Query(BEGIN)</span><br><span class="line">DML-3: Statements</span><br><span class="line">DML-4: (Query(COMMIT) | Query([XA] ROLLBACK) | Xid | Xa_prepare)</span><br></pre></td></tr></table></figure>
+
+<h3 id="说明"><a href="#说明" class="headerlink" title="说明"></a>说明</h3><ul>
+<li>DDL和DML事务由不同的binlog事件序列组成，在开启GTID的时候，都是以GTID事件开始；</li>
+<li>DML事务的开始和结束有相对明显的事件标识，通常以BEGIN或者XA START事件作为事务的开始，以COMMIT/ROLLBACK等事务的提交作为结束；</li>
+<li>DDL事务的结束相对难以确定，其中DDL-2中的三种binlog事件是一种预处理事件，User代表语句中使用了用户变量，Intvar代表语句中使用了INSERT_ID或LAST_INSERT_ID，Rand代表语句中使用了Rand()函数， 在ROW格式的binlog中，不存在预处理事件；</li>
+</ul>
+<h2 id="事务边界判断的状态机"><a href="#事务边界判断的状态机" class="headerlink" title="事务边界判断的状态机"></a>事务边界判断的状态机</h2><p>根据以上事务序列的定义，可以将事务边界的判断抽象为一个状态机，该状态机包含一下几种状态：</p>
+<ul>
+<li>EVENT_PARSER_NONE，开始状态，在遇到DDL-3或者DML-4类型的event后，跳转到该状态，表示上一个事务的结束，一个新事物的开始；</li>
+<li>EVENT_PARSER_GTID, GTID状态，在遇到DDL-1或者DML-1类型的event(其实就是Gtid_log_event)后，跳转到该状态，不开启GTID时，不存在该状态；</li>
+<li>EVENT_PARSER_DDL, DDL状态，在遇到DDL-2类型的event后，跳转到该状态，表示当前在一个DDL事务中；</li>
+<li>EVENT_PARSER_DML, DML状态，在遇到DML-2类型的event(BEGIN)后，跳转到该状态，表示当前在一个DML事务中；</li>
+<li>EVENT_PARSER_ERROR, 错误状态，遇到非正常事件序列后，跳转到该状态；</li>
+</ul>
+<p>状态机的跳转逻辑图如下：<br><img src="/images/ba270a7f-408e-4337-b78d-ca0afd799317.png" border="0"></p>
+<p>注意：</p>
+<blockquote>
+<p>不管前驱状态如何，只要遇到错误的边界类型，状态机都会转移成ERROR，为了使逻辑图清晰，这部分没有画！</p>
+</blockquote>
+<h2 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h2><ul>
+<li>本文内容来自Mysql 5.7源代码sql/rpl_trx_boundary_parser.h(cc)两个文件，感兴趣可研究一下。</li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+        <tag>LogEvent</tag>
+        <tag>Transaction</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>Linux性能优化笔记--理解平均负载</title>
+    <url>/2019/04/04/understand-linux-avg-load/</url>
+    <content><![CDATA[<h2 id="知识点"><a href="#知识点" class="headerlink" title="知识点"></a>知识点</h2><ul>
+<li>平均负载是指单位时间内，系统处于可运行状态和不可中断状态的平均进程数，也就是平均活跃进程数，它和CPU使用率并没有直接关系；</li>
+<li>可运行状态的进程是指正在使用CPU和正在等待CPU的进程，即使用PS命令看到的R状态的进程；</li>
+</ul>
+<a id="more"></a>
+
+<ul>
+<li><p>不可中断状态的进程是指正在处于内核态关键流程中的进程，并且这些流程是不可打断的，比如正在等待IO响应，即使用PS命令看到的D状态的进程；不可中断状态是系统对进程和硬件的一种保护机制；</p>
+</li>
+<li><p>最理想的状态下，一个CPU一个进程，即平均负载等于CPU的个数；</p>
+</li>
+<li><p>例子说明：假如平均负载为2，意味着什么？</p>
+<blockquote>
+<p>如果有2个CPU，则意味着所有CPU刚好都被占用；<br>如果有4个CPU，则意味着有一半的CPU处于空闲状态；<br>如果有1个CPU，则意味着有一半的进程处于挂起状态；</p>
+</blockquote>
+</li>
+<li><p>查看CPU信息：cat /proc/cpuinfo 或者 lscpu；</p>
+</li>
+<li><p>当平均负载高于CPU数量70%的时候，可以认为已经是负载过高了；</p>
+</li>
+<li><p>最好的方法是把机器负载实时监控起来，根据负载趋势图观察当前负载是否属于过高；</p>
+</li>
+<li><p>CPU使用率是单位时间内CPU繁忙情况的统计；</p>
+</li>
+<li><p>平均负载和CPU使用率对比说明：</p>
+<blockquote>
+<p>CPU密集型进程，使用大量CPU导致负载升高，此时两者一致；<br>IO密集型进程，等待IO也会导致平均负载升高，但CPU使用率不一定高；<br>大量等待CPU的进程调度也会导致平均负载升高，此时两者也是一致的；</p>
+</blockquote>
+</li>
+</ul>
+<h2 id="相关工具"><a href="#相关工具" class="headerlink" title="相关工具"></a>相关工具</h2><ul>
+<li>stress - Linux下的系统压力测试工具，可以模拟CPU、磁盘IO、内存等压力，非常有用；</li>
+<li>mpstat - 多核CPU性能分析工具，查看每个CPU的性能指标及所有CPU的平均指标；</li>
+<li>pidstat - 进程性能分析工具，查看每个进程的CPU、内存、IO及上下文切换等性能指标；</li>
+</ul>
+<h2 id="场景模拟"><a href="#场景模拟" class="headerlink" title="场景模拟"></a>场景模拟</h2><ul>
+<li><p>模拟CPU使用率100%</p>
+<ul>
+<li>使用stress工具<code>$ stress --cpu 1 --timeout 600</code>；</li>
+<li>观察平均负载的变化<code>$ watch -d uptime</code>；</li>
+<li>查看CPU使用率的变化<code>$ mpstat -P ALL 5</code>；</li>
+<li>定位CPU使用率高的进程<code>$ pidstat -u 5 1</code>；</li>
+</ul>
+</li>
+<li><p>模拟高IO压力</p>
+<ul>
+<li>使用stress工具<code>$ stress -i 1 --timeout 600</code>；</li>
+<li>观察平均负载的变化<code>$ watch -d uptime</code>；</li>
+<li>查看CPU使用率的变化<code>$ mpstat -P ALL 5 1</code>；</li>
+<li>定位CPU使用率高的进程<code>$ pidstat -u 5 1</code>；</li>
+</ul>
+</li>
+<li><p>模拟大量进程</p>
+<ul>
+<li>使用stress工具 <code>$ stress -c 8 --timeout 600</code>；</li>
+<li>观察平均负载 <code>$ uptime</code>；</li>
+<li>查看进程情况 <code>$ mpstat -P ALL 5 1</code>；</li>
+</ul>
+</li>
+</ul>
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>根据平均负载可以快速判断一个系统的整体性能，需要进一步定位是什么原因导致的平均负载高的问题。可能是CPU密集型进程导致的，也可能是IO繁忙导致的，具体是那种可以使用mpstat或者pidstat等工具查看。</p>
+]]></content>
+      <categories>
+        <category>学习笔记</category>
+      </categories>
+      <tags>
+        <tag>linux</tag>
+        <tag>cpu</tag>
+        <tag>load</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>MySQL中test库默认权限问题</title>
+    <url>/2017/12/26/test-database-privileges/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近在测试MySQL用户权限相关的事情，发现用户在无任何权限的情况下，是可以随意操作test库的。在此记录一下该问题及其原因。</p>
+<a id="more"></a>
+
+<h3 id="问题描述"><a href="#问题描述" class="headerlink" title="问题描述"></a><strong>问题描述</strong></h3><p>安装一个MySQL版本为5.6的新实例，创建了一个test2的用户。用户在创建后，默认是没有任何权限的，如下图：</p>
+<p><img src="/images/2717a7d9-8b1e-4df0-952a-038cb6a321c7.png" alt="test2用户权限"></p>
+<p>通过该test2用户登陆后，无法创建其他库，但是可以对test库进行操作:</p>
+<p><img src="/images/28c856ac-b861-467c-a091-ef1b2197d340.png" alt="test2操作test库"></p>
+<p>为什么会这么奇怪呢？如果没有任何权限，应该不能做任何操作才对，怎么能在test库下创建表呢？</p>
+<h3 id="问题排查"><a href="#问题排查" class="headerlink" title="问题排查"></a><strong>问题排查</strong></h3><p>查看mysql官方文档，可以知道：</p>
+<ul>
+<li>mysql系统库下存在7个关于权限相关的表，分别是：</li>
+</ul>
+<blockquote>
+<ul>
+<li>mysql.user表，保存用户相关的权限；当创建用户时，会在该表中插入用户相关记录，后续对创建的用户执行Grant授权时，会修改该表中对应用户的权限信息；</li>
+<li>mysql.db表，保存库的访问权限；当使用Grant限制某个用户访问指定的某些库时，会在该表中插入对应记录；</li>
+<li>mysql.host表，该表在MySQL 5.6.7及以后版本中不再被创建；</li>
+<li>mysql.tables_priv表，保存表级访问权限；当使用Grant限制某个用户访问特定库中的某个表时，会在该表中插入对应记录；</li>
+<li>mysql.columns_priv表，保存列级访问权限；mysql允许用户可以限制只访问某个表中的某些列，当对列的权限有限制时，会在该表中插入记录；</li>
+<li>mysql.procs_priv表，保存存储过程和存储函数相关权限；</li>
+<li>mysql.proxies_priv表，包括代理用户相关权限；</li>
+</ul>
+</blockquote>
+<p>我们查询mysql.db表，得到如下信息：</p>
+<p><img src="/images/588b33b2-c92f-4aec-bdd4-89aec3c75334.png" alt="mysql.db表"></p>
+<p>可以看到，对于test库以及’test_’开头的库，User字段为空，意味着所有的用户都可以对其进操作（权限字段为Y的那些操作），包括那些没有权限的用户。</p>
+<ul>
+<li>可以看到默认情况下，初始化的mysql环境中mysql.db表默认包含的2行test数据库相关的配置，导致任意用户可以随意操作test或者test_开头的数据库</li>
+</ul>
+<p><img src="/images/c6b6cd00-aa3b-4bb6-8312-03e5cfc7f707.png" alt="mysql.db表"></p>
+<h3 id="深入问题"><a href="#深入问题" class="headerlink" title="深入问题"></a><strong>深入问题</strong></h3><p>由于mysql实例是新创建的，并且没有对test2用户执行过任何库级的grant，那么mysql.db中的这两条记录是什么时候insert的呢？</p>
+<p>带着这个问题，我们查看了mysql安装工具mysql_install_db，在该pl工具中，会先使用mysql_system_tables.sql文件创建所有系统表，然后使用mysql_system_tables_data.sql文件初始化系统表数据。</p>
+<p><img src="/images/dddceb4f-d9c1-44d9-8e34-a36d134bdbf2.png" alt="变量定义"></p>
+<p><img src="/images/4d4f89fe-933d-4472-8ea2-47095887e013.png" alt="创建系统表"></p>
+<p>既然这样，查看mysql_system_tables_data.sql文件可以清楚看到对mysql.db表的初始化数据，如下：</p>
+<p><img src="/images/cef9f648-e32b-47eb-933b-5d7ecbacc9d6.png" alt="初始化系统表"></p>
+<p>至此，test库权限问题的原因已经找到。</p>
+<h3 id="后记"><a href="#后记" class="headerlink" title="后记"></a><strong>后记</strong></h3><p>还有两个遗留问题：</p>
+<ul>
+<li><p>一直以来，MySQL为什么对test库及test_开头的库的权限如此’开放’呢？</p>
+</li>
+<li><p>到了MySQL 5.7版本，官方把默认的test库直接干掉了，是不是由于test库引发了某些安全性问题才这么做的呢？</p>
+</li>
+</ul>
+<p>不管怎样，鉴于此，在使用MySQL时，还是需要注意：</p>
+<ul>
+<li>正式环境千万别使用test数据库或者创建test_开头的数据库来存储业务数据；</li>
+<li>对用户的权限进行测试、验证的时候，千万别去test数据库，这可能误导你；</li>
+<li>如果想彻底避免以上问题，可以将mysql.db中test相关的数据delete掉；</li>
+</ul>
+<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/system-database.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/system-database.html</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html</a></li>
+<li><a href="http://blog.itpub.net/27000195/viewspace-2119967/" target="_blank" rel="noopener">http://blog.itpub.net/27000195/viewspace-2119967/</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+      </tags>
+  </entry>
+</search>
