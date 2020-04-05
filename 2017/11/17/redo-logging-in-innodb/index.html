@@ -1,0 +1,1338 @@
+<!DOCTYPE html>
+
+
+
+  
+
+
+<html class="theme-next mist use-motion" lang="zh-Hans">
+<head><meta name="generator" content="Hexo 3.9.0">
+  <meta charset="UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<meta name="theme-color" content="#222">
+
+
+
+
+
+
+
+
+
+<meta http-equiv="Cache-Control" content="no-transform">
+<meta http-equiv="Cache-Control" content="no-siteapp">
+
+
+
+  <meta name="google-site-verification" content="ViG6R1xTYVDnyXcueQ_a81RxP6DoZfN-8uSDq_lqeMs">
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+  
+  <link href="/lib/fancybox/source/jquery.fancybox.css?v=2.1.5" rel="stylesheet" type="text/css">
+
+
+
+
+
+
+
+<link href="/lib/font-awesome/css/font-awesome.min.css?v=4.6.2" rel="stylesheet" type="text/css">
+
+<link href="/css/main.css?v=5.1.3" rel="stylesheet" type="text/css">
+
+
+  <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-next.ico?v=5.1.3">
+
+
+  <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32-next.ico?v=5.1.3">
+
+
+  <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16-next.ico?v=5.1.3">
+
+
+  <link rel="mask-icon" href="/logo.ico?v=5.1.3" color="#222">
+
+
+
+
+
+  <meta name="keywords" content="mysql,InnoDB,">
+
+
+
+
+
+
+
+
+
+
+<meta name="description" content="前言同上篇一样，本文翻译自《Redo Logging in InnoDB》，原文属于InnoDB官方blog。我认为学习mysql一个比较好的方式应该是文档加源码，翻译此文的目的也是为了学习，有翻译错误的地方，烦请指出。">
+<meta name="keywords" content="mysql,InnoDB">
+<meta property="og:type" content="article">
+<meta property="og:title" content="『译』InnoDB的重做日志">
+<meta property="og:url" content="http://www.pollilog.cn/2017/11/17/redo-logging-in-innodb/index.html">
+<meta property="og:site_name" content="Polli&#39;s Logs">
+<meta property="og:description" content="前言同上篇一样，本文翻译自《Redo Logging in InnoDB》，原文属于InnoDB官方blog。我认为学习mysql一个比较好的方式应该是文档加源码，翻译此文的目的也是为了学习，有翻译错误的地方，烦请指出。">
+<meta property="og:locale" content="zh-Hans">
+<meta property="og:image" content="http://www.pollilog.cn/images/e87fbc21-89f6-43d8-8f3d-12731fd027c3.jpg">
+<meta property="og:image" content="http://www.pollilog.cn/images/0563636c-5220-4150-ae0d-21882127233a.jpg">
+<meta property="og:updated_time" content="2020-04-05T04:07:01.385Z">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="『译』InnoDB的重做日志">
+<meta name="twitter:description" content="前言同上篇一样，本文翻译自《Redo Logging in InnoDB》，原文属于InnoDB官方blog。我认为学习mysql一个比较好的方式应该是文档加源码，翻译此文的目的也是为了学习，有翻译错误的地方，烦请指出。">
+<meta name="twitter:image" content="http://www.pollilog.cn/images/e87fbc21-89f6-43d8-8f3d-12731fd027c3.jpg">
+
+
+
+<script type="text/javascript" id="hexo.configurations">
+  var NexT = window.NexT || {};
+  var CONFIG = {
+    root: '/',
+    scheme: 'Mist',
+    version: '5.1.3',
+    sidebar: {"position":"left","display":"post","offset":12,"b2t":false,"scrollpercent":false,"onmobile":false},
+    fancybox: true,
+    tabs: true,
+    motion: {"enable":true,"async":false,"transition":{"post_block":"fadeIn","post_header":"slideDownIn","post_body":"slideDownIn","coll_header":"slideLeftIn","sidebar":"slideUpIn"}},
+    duoshuo: {
+      userId: '0',
+      author: '博主'
+    },
+    algolia: {
+      applicationID: '',
+      apiKey: '',
+      indexName: '',
+      hits: {"per_page":10},
+      labels: {"input_placeholder":"Search for Posts","hits_empty":"We didn't find any results for the search: ${query}","hits_stats":"${hits} results found in ${time} ms"}
+    }
+  };
+</script>
+
+
+
+  <link rel="canonical" href="http://www.pollilog.cn/2017/11/17/redo-logging-in-innodb/">
+
+
+
+
+
+  <title>『译』InnoDB的重做日志 | Polli's Logs</title>
+  
+
+
+
+
+
+  <script type="text/javascript">
+    var _hmt = _hmt || [];
+    (function() {
+      var hm = document.createElement("script");
+      hm.src = "https://hm.baidu.com/hm.js?abfe9eb1d00fc41da9ea3ee9c497b190";
+      var s = document.getElementsByTagName("script")[0];
+      s.parentNode.insertBefore(hm, s);
+    })();
+  </script>
+
+
+
+
+</head>
+
+<body itemscope itemtype="http://schema.org/WebPage" lang="zh-Hans">
+
+  
+  
+    
+  
+
+  <div class="container sidebar-position-left page-post-detail">
+    <div class="headband"></div>
+
+    <header id="header" class="header" itemscope itemtype="http://schema.org/WPHeader">
+      <div class="header-inner"><div class="site-brand-wrapper">
+  <div class="site-meta ">
+    
+
+    <div class="custom-logo-site-title">
+      <a href="/" class="brand" rel="start">
+        <span class="logo-line-before"><i></i></span>
+        <span class="site-title">Polli's Logs</span>
+        <span class="logo-line-after"><i></i></span>
+      </a>
+    </div>
+      
+        <h1 class="site-subtitle" itemprop="description"></h1>
+      
+  </div>
+
+  <div class="site-nav-toggle">
+    <button>
+      <span class="btn-bar"></span>
+      <span class="btn-bar"></span>
+      <span class="btn-bar"></span>
+    </button>
+  </div>
+</div>
+
+<nav class="site-nav">
+  
+
+  
+    <ul id="menu" class="menu">
+      
+        
+        <li class="menu-item menu-item-home">
+          <a href="/" rel="section">
+            
+              <i class="menu-item-icon fa fa-fw fa-home"></i> <br>
+            
+            首页
+          </a>
+        </li>
+      
+        
+        <li class="menu-item menu-item-archives">
+          <a href="/archives/" rel="section">
+            
+              <i class="menu-item-icon fa fa-fw fa-archive"></i> <br>
+            
+            归档
+          </a>
+        </li>
+      
+        
+        <li class="menu-item menu-item-tags">
+          <a href="/tags/" rel="section">
+            
+              <i class="menu-item-icon fa fa-fw fa-tags"></i> <br>
+            
+            标签
+          </a>
+        </li>
+      
+        
+        <li class="menu-item menu-item-categories">
+          <a href="/categories/" rel="section">
+            
+              <i class="menu-item-icon fa fa-fw fa-th"></i> <br>
+            
+            分类
+          </a>
+        </li>
+      
+        
+        <li class="menu-item menu-item-about">
+          <a href="/about/" rel="section">
+            
+              <i class="menu-item-icon fa fa-fw fa-user"></i> <br>
+            
+            关于
+          </a>
+        </li>
+      
+
+      
+        <li class="menu-item menu-item-search">
+          
+            <a href="javascript:;" class="popup-trigger">
+          
+            
+              <i class="menu-item-icon fa fa-search fa-fw"></i> <br>
+            
+            搜索
+          </a>
+        </li>
+      
+    </ul>
+  
+
+  
+    <div class="site-search">
+      
+  <div class="popup search-popup local-search-popup">
+  <div class="local-search-header clearfix">
+    <span class="search-icon">
+      <i class="fa fa-search"></i>
+    </span>
+    <span class="popup-btn-close">
+      <i class="fa fa-times-circle"></i>
+    </span>
+    <div class="local-search-input-wrapper">
+      <input autocomplete="off" placeholder="搜索..." spellcheck="false" type="text" id="local-search-input">
+    </div>
+  </div>
+  <div id="local-search-result"></div>
+</div>
+
+
+
+    </div>
+  
+</nav>
+
+
+
+ </div>
+    </header>
+
+    <main id="main" class="main">
+      <div class="main-inner">
+        <div class="content-wrap">
+          <div id="content" class="content">
+            
+
+  <div id="posts" class="posts-expand">
+    
+
+  
+
+  
+  
+  
+
+  <article class="post post-type-normal" itemscope itemtype="http://schema.org/Article">
+  
+  
+  
+  <div class="post-block">
+    <link itemprop="mainEntityOfPage" href="http://www.pollilog.cn/2017/11/17/redo-logging-in-innodb/">
+
+    <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
+      <meta itemprop="name" content="polli">
+      <meta itemprop="description" content>
+      <meta itemprop="image" content="/images/Penguins.jpg">
+    </span>
+
+    <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
+      <meta itemprop="name" content="Polli's Logs">
+    </span>
+
+    
+      <header class="post-header">
+
+        
+        
+          <h2 class="post-title" itemprop="name headline">『译』InnoDB的重做日志</h2>
+        
+
+        <div class="post-meta">
+          <span class="post-time">
+            
+              <span class="post-meta-item-icon">
+                <i class="fa fa-calendar-o"></i>
+              </span>
+              
+                <span class="post-meta-item-text">发表于</span>
+              
+              <time title="创建于" itemprop="dateCreated datePublished" datetime="2017-11-17T22:50:44+08:00">
+                2017-11-17
+              </time>
+            
+
+            
+
+            
+          </span>
+
+          
+            <span class="post-category">
+            
+              <span class="post-meta-divider">|</span>
+            
+              <span class="post-meta-item-icon">
+                <i class="fa fa-folder-o"></i>
+              </span>
+              
+                <span class="post-meta-item-text">分类于</span>
+              
+              
+                <span itemprop="about" itemscope itemtype="http://schema.org/Thing">
+                  <a href="/categories/mysql/" itemprop="url" rel="index">
+                    <span itemprop="name">mysql</span>
+                  </a>
+                </span>
+
+                
+                
+              
+            </span>
+          
+
+          
+            
+              <span class="post-comments-count">
+                <span class="post-meta-divider">|</span>
+                <span class="post-meta-item-icon">
+                  <i class="fa fa-comment-o"></i>
+                </span>
+                <a href="/2017/11/17/redo-logging-in-innodb/#comments" itemprop="discussionUrl">
+                  <span class="post-comments-count disqus-comment-count" data-disqus-identifier="2017/11/17/redo-logging-in-innodb/" itemprop="commentCount">0</span>
+                </a>
+              </span>
+            
+          
+
+          
+          
+
+          
+            <span class="post-meta-divider">|</span>
+            <span class="page-pv"><i class="fa fa-eye"></i> 浏览
+            <span class="busuanzi-value" id="busuanzi_value_page_pv"></span>次
+            </span>
+          
+
+          
+
+          
+
+        </div>
+      </header>
+    
+
+    
+    
+    
+    <div class="post-body" itemprop="articleBody">
+
+      
+      
+
+      
+        <h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>同上篇一样，本文翻译自《Redo Logging in InnoDB》，原文属于InnoDB官方blog。我认为学习mysql一个比较好的方式应该是文档加源码，翻译此文的目的也是为了学习，有翻译错误的地方，烦请指出。</p>
+<a id="more"></a>
+
+<h3 id="简介"><a href="#简介" class="headerlink" title="简介"></a><strong>简介</strong></h3><p>InnoDB是一种平衡了高可靠和高性能的通用存储引擎。与其他关系型数据库一样，InnoDB支持事务和完全遵循ACID原则。其中，InnoDB的持久化是通过redolog来保证的。</p>
+<p>本文主要关注InnoDB的redolog子系统或者log子系统。主要从以下几个方面做详细介绍：</p>
+<ul>
+<li>全局log系统对象，主要提供对重要数据结构和信息的访问；</li>
+<li>迷你事务（简称mtr），redolog记录都是以迷你事务的形式来生成的；</li>
+<li>全局内存日志缓存，redolog会从mtr缓存中拷贝到全局内存日志缓存，该缓存会周期性的刷到磁盘上的redolog文件中；</li>
+<li>磁盘上的redolog文件及其高级内部结构；</li>
+<li>LSN的基本概念以及如何使用不同的LSN值来实现预写日志(WAL)；</li>
+</ul>
+<h3 id="重做日志的生成"><a href="#重做日志的生成" class="headerlink" title="重做日志的生成"></a><strong>重做日志的生成</strong></h3><p>在《InnoDB的数据组织》一文中，已经讲过，InnoDB的用户数据文件由一系列相同大小的page组成。这些page通过（space_id，page_no）这个二元组来唯一标识。每次如果需要读或者修改这些page，都要将其加载到内存中，因此，这时page就会有两份copy，一份在磁盘上，一份在内存中。这里介绍一下redolog产生过程中的高级步骤：</p>
+<ol>
+<li>任何需要对page做的修改，都会先修改内存中的page。那些在内存中已经被修改，但是还未刷到磁盘的page被标记为脏页；</li>
+<li>在局部的MTR缓存中生成相应的redolog，随后这些redolog会被拷贝到全局内存redolog缓存；</li>
+<li>从redolog缓存中把redolog记录写入磁盘上的redolog文件，接着会执行flush操作。写redolog文件和刷redolog文件到磁盘，这两个步骤是相互独立的。这里需要考虑操作系统对文件的缓存；</li>
+<li>脏页会在稍后的某个时刻执行checkpoint操作时刷到磁盘上；<br>以上几个步骤的顺序很重要，必须先刷对redolog的修改到磁盘，再刷对应的脏页到磁盘，这个就是预写日志的概念。</li>
+</ol>
+<p>生成的redolog记录中保存了在数据库恢复时可以执行的相同操作的必要信息。 因此，redolog记录中包含了原page的信息以及对page的修改信息。数据库恢复的时候会重新生成redolog记录中原page的脏页。</p>
+<h3 id="重做日志文件"><a href="#重做日志文件" class="headerlink" title="重做日志文件"></a><strong>重做日志文件</strong></h3><p>默认情况下，InnoDB会在MySQL的数据字典中创建两个redolog文件，ib_logfile0和ib_logfile1。在MySQL 5.6.8及以后的版本中，每个redolog文件的大小默认为48MB。用户可以通过修改innodb_log_file_size配置来控制redolog文件的大小，redolog文件的数量由配置项innodb_log_files_in_group来控制。 一个日志组由多个大小相同的日志文件组成，在MySQL 5.6中，InnoDB只支持一个日志组，这个会在以后再讨论。</p>
+<p>redolog使用一种循环的方式，也就是说，在写redolog的时候，会从第一个redolog文件的开始，一直写到结尾，然后继续写下一个redolog文件，以此类推直到最后一个redolog文件的结尾，然后再从第一个redolog文件开始继续写。</p>
+<p>redolog是由一系列固定大小为512字节的log块组成，每个redolog文件都有一个固定大小为2KB的文件头部。</p>
+<h3 id="重做日志文件头"><a href="#重做日志文件头" class="headerlink" title="重做日志文件头"></a><strong>重做日志文件头</strong></h3><p>redolog文件头部占4个log块，包含以下信息：</p>
+<ul>
+<li>前4个字节表示该redolog文件所属的log组号；</li>
+<li>紧接着的8个字节表示该redolog开始数据的LSN；</li>
+<li>第一个checkpoint字段位于第二个log块的开始；</li>
+<li>第二个checkpoint字段位于第四个log块的开始；</li>
+</ul>
+<p>checkpoint字段包括了：checkpoint序列号，checkpoint的LSN，校验和等其他信息。</p>
+<h3 id="log块"><a href="#log块" class="headerlink" title="log块"></a><strong>log块</strong></h3><p>一个redolog文件可以看成一系列的log块，除redolog文件头部的4个log块之外，其他所有log块都包含一个头部和一个尾部。头部的大小是12字节，尾部大小是4字节。log块头部包含以下信息：</p>
+<ul>
+<li>log块的编号，4个字节；</li>
+<li>该log块中log所占的字节数，2字节；</li>
+<li>该log块中第一个mtr log组的起始偏移，如果没有，则为0；</li>
+<li>该log块所属的checkpoint编号；</li>
+</ul>
+<p>log块尾部中包含了该log块内容的校验和信息。</p>
+<p>log块的格式如下图所示：</p>
+<p><img src="/images/e87fbc21-89f6-43d8-8f3d-12731fd027c3.jpg" alt="log块的格式"></p>
+<h3 id="日志序列号-LSN"><a href="#日志序列号-LSN" class="headerlink" title="日志序列号(LSN)"></a><strong>日志序列号(LSN)</strong></h3><p>日志序列号，简称LSN，是一个比较重要的概念。LSN可以看成是redolog的一个偏移信息，在InnoDB中LSN使用一个8字节的无符号整数来表示。有些LSN值需要特别注意，下表列出来一些将要讨论的LSN值。</p>
+<table>
+<thead>
+<tr>
+<th>LSN</th>
+<th>描述</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>log_sys-&gt;lsn</td>
+<td>下一个要生成的redolog记录的LSN值</td>
+</tr>
+<tr>
+<td>log_sys-&gt;flush_to_disk_lsn</td>
+<td>所有LSN小于该值的redolog都已经刷到磁盘上了</td>
+</tr>
+<tr>
+<td>log_sys-&gt;write_lsn</td>
+<td>当前正在运行的写操作将会写到该LSN</td>
+</tr>
+<tr>
+<td>log_sys–&gt;current_flush_lsn</td>
+<td>当前正在运行的写+flush操作将会写到该LSN</td>
+</tr>
+</tbody></table>
+<p>LSN是与脏页、redolog记录、redolog文件相联系的。每一个redolog记录被拷贝到内存的日志缓存中时，都会获得一个相关的LSN。当数据库页被修改的时候，会生成redolog记录，因此，每个数据库页也与一个LSN相关。page的LSN存储在page的头部结构中。页的LSN是指在页被刷到磁盘之前，redolog文件已经被刷到的LSN位置。</p>
+<h3 id="全局日志系统对象"><a href="#全局日志系统对象" class="headerlink" title="全局日志系统对象"></a><strong>全局日志系统对象</strong></h3><p>全局日志系统对象log_sys包含了关于innodb日志子系统的重要信息。这里只讨论下与redolog缓存和redolog文件相关的信息。全局变量log_sys标识了日志缓存当前的活动区域，该区域中保存了还未被安全的刷到磁盘上的redologs，也标识了redolog缓存将要写或者刷到redolog文件中的区域。<br>log_t结构体定义(5.7.17版本storage/innodbase/include/log0log.h:617)</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">/** Redo log buffer */</span></span><br><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">log_t</span>&#123;</span></span><br><span class="line">    ....</span><br><span class="line">    <span class="keyword">lsn_t</span>        lsn;        <span class="comment">/*!&lt; log sequence number */</span></span><br><span class="line">    ulint        buf_free;    <span class="comment">/*!&lt; first free offset within the log buffer in use */</span></span><br><span class="line">    ....</span><br><span class="line">    byte*        buf_ptr;    <span class="comment">/*!&lt; unaligned log buffer, which should be of double of buf_size */</span></span><br><span class="line">    byte*        buf;        <span class="comment">/*!&lt; log buffer currently in use;</span></span><br><span class="line"><span class="comment">                    this could point to either the first</span></span><br><span class="line"><span class="comment">                    half of the aligned(buf_ptr) or the</span></span><br><span class="line"><span class="comment">                    second half in turns, so that log</span></span><br><span class="line"><span class="comment">                    write/flush to disk don't block</span></span><br><span class="line"><span class="comment">                    concurrent mtrs which will write</span></span><br><span class="line"><span class="comment">                    log to this buffer */</span></span><br><span class="line">    <span class="keyword">bool</span>        first_in_use;    <span class="comment">/*!&lt; true if buf points to the first</span></span><br><span class="line"><span class="comment">                    half of the aligned(buf_ptr), false</span></span><br><span class="line"><span class="comment">                    if the second half */</span></span><br><span class="line">    ulint        buf_size;    <span class="comment">/*!&lt; log buffer size of each in bytes */</span></span><br><span class="line">    ulint        max_buf_free;    <span class="comment">/*!&lt; recommended maximum value of</span></span><br><span class="line"><span class="comment">                    buf_free for the buffer in use, after</span></span><br><span class="line"><span class="comment">                    which the buffer is flushed */</span></span><br><span class="line">    ....</span><br><span class="line">    <span class="comment">/** The fields involved in the log buffer flush @&#123; */</span></span><br><span class="line">    ulint        buf_next_to_write;<span class="comment">/*!&lt; first offset in the log buffer</span></span><br><span class="line"><span class="comment">                    where the byte content may not exist</span></span><br><span class="line"><span class="comment">                    written to file, e.g., the start</span></span><br><span class="line"><span class="comment">                    offset of a log record catenated</span></span><br><span class="line"><span class="comment">                    later; this is advanced when a flush</span></span><br><span class="line"><span class="comment">                    operation is completed to all the log</span></span><br><span class="line"><span class="comment">                    groups */</span></span><br><span class="line">    <span class="keyword">volatile</span> <span class="keyword">bool</span>    is_extending;   <span class="comment">/*!&lt; this is set to true during extend the log buffer size */</span></span><br><span class="line">    <span class="keyword">lsn_t</span>        write_lsn;    <span class="comment">/*!&lt; last written lsn */</span></span><br><span class="line">    <span class="keyword">lsn_t</span>        current_flush_lsn;<span class="comment">/*!&lt; end lsn for the current runningwrite + flush operation */</span></span><br><span class="line">    <span class="keyword">lsn_t</span>        flushed_to_disk_lsn; <span class="comment">/*!&lt; how far we have written the log AND flushed to disk */</span></span><br><span class="line">    ....</span><br><span class="line">&#125;;</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li>log_sys-&gt;buf成员指向内存中的redolog缓存，mtr_commits()操作会将redolog记录写入到该缓存中，缓存的大小由log_sys-&gt;buf_size给出；</li>
+<li>log_sys-&gt;buf_free指向内存中redolog缓存的空闲位置（下一个redolog记录将要写的位置）的偏移，这也是下一个redolog刷磁盘的结束位置；</li>
+<li>log_sys-&gt;buf_next_to_write指向还未写到redolog文件中的那些redolog记录的偏移，下次redolog刷盘的时候，将会从该位置开始刷，这也是下一个redolog刷盘的开始位置；</li>
+<li>log_sys-&gt;flushed_to_disk_lsn指那些已经落盘并flush过的LSN，因此，在这个LSN之前的所有redolog已经写到磁盘上了，是安全的。这个值总是小于等于log_sys-&gt;write_lsn和log_sys-&gt;lsn；</li>
+<li>log_sys-&gt;lsn表示当前的LSN，每次执行mtr_commit()操作，该值都会更新。mtr_commit()函数写一个MTR中的一串redolog记录到全局或者系统的redolog缓存中，该LSN值总是大于等于log_sys-&gt;flushed_to_disk_lsn和log_sys-&gt;write_lsn，该值是一个将要从log_sys-&gt;buf_free位置开始写的redolog记录的LSN；</li>
+<li>log_sys-&gt;write_lsn表示当前写redolog缓存操作结束时的LSN，该值总是小于等于log_sys-&gt;lsn，大于等于log_sys-&gt;flushed_to_disk_lsn；</li>
+<li>log_sys-&gt;current_flush_lsn表示当前正在运行的一个write+flush操作结束时的LSN，该值几乎等于log_sys-&gt;write_lsn；</li>
+</ul>
+<p>全局log_sys对象指向内存中redolog缓存和磁盘上redolog文件的各种位置，下图中展示了全局log_sys对象指向的这些位置，同时下图也清楚的表示了redolog缓存映射到redolog文件中某一个具体的位置。</p>
+<p><img src="/images/0563636c-5220-4150-ae0d-21882127233a.jpg" alt="redolog缓存和redolog文件之间的关系"></p>
+<h3 id="全局内存redolog缓存"><a href="#全局内存redolog缓存" class="headerlink" title="全局内存redolog缓存"></a><strong>全局内存redolog缓存</strong></h3><p>内存中的redolog缓存是全局的，用户产生的所有redolog事务都会写入到这个缓存中。缓存的大小可以通过配置项innodb_log_buffer_size配置项来指定，默认大小是8MB。</p>
+<p>当一个运行中的事务要修改数据库的时候，将会产生redolog并写入到该缓存中，当事务提交或者缓存满的时候，缓存中的redolog记录将会写或刷到redolog文件中。</p>
+<p>当redolog缓存满的时候，没有足够的空间执行mtr_commit()操作(该操作会拷贝一组redolog记录到redolog缓存中)，此时会有一个同步的log_buffer_flush_to_disk()操作将redolog缓存刷到redolog文件中，这个操作的偏移区间是从log_sys-&gt;buf_next_to_write到log_sys-&gt;buf_free，这个操作的LSN范围是从log_sys-&gt;flushed_to_disk_lsn到log_sys-&gt;lsn。</p>
+<h3 id="迷你事务-MTR"><a href="#迷你事务-MTR" class="headerlink" title="迷你事务(MTR)"></a><strong>迷你事务(MTR)</strong></h3><p>MTR用来生成redolog记录，将产生的redolog记录保存在一个局部缓存中。如果我们需要生成一组redolog记录（要么所有记录都刷到redolog文件，要么都没有刷到redolog文件），那么我们需要把它们在单个小的事务中执行。除了redolog记录之外，MTR还包含一个脏页的列表。<br>MTR的正常使用如下：</p>
+<ul>
+<li>创建一个mtr_t类型的MTR对象；</li>
+<li>使用mtr_start()函数开始一个MTR，此函数会初始化MTR缓存；</li>
+<li>使用mlog_write_ulint()系列函数生成redolog记录；</li>
+<li>使用mtr_commit()函数提交MTR，该函数会将redolog记录从MTR缓存拷贝到全局redolog缓存中，同时MTR中的脏页列表也会被添加到buffer pool的flush列表中；</li>
+</ul>
+<p>这里给出MTR定义的一个参考，其中mtr_t::log保存redolog记录的MTR缓存, mtr_t::memo包含MTR的脏页列表。</p>
+<figure class="highlight cpp"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br><span class="line">13</span><br><span class="line">14</span><br><span class="line">15</span><br><span class="line">16</span><br><span class="line">17</span><br><span class="line">18</span><br><span class="line">19</span><br><span class="line">20</span><br><span class="line">21</span><br><span class="line">22</span><br><span class="line">23</span><br><span class="line">24</span><br><span class="line">25</span><br><span class="line">26</span><br><span class="line">27</span><br><span class="line">28</span><br><span class="line">29</span><br><span class="line">30</span><br><span class="line">31</span><br><span class="line">32</span><br><span class="line">33</span><br><span class="line">34</span><br><span class="line">35</span><br><span class="line">36</span><br><span class="line">37</span><br><span class="line">38</span><br><span class="line">39</span><br><span class="line">40</span><br><span class="line">41</span><br><span class="line">42</span><br><span class="line">43</span><br><span class="line">44</span><br><span class="line">45</span><br><span class="line">46</span><br><span class="line">47</span><br><span class="line">48</span><br><span class="line">49</span><br><span class="line">50</span><br><span class="line">51</span><br><span class="line">52</span><br><span class="line">53</span><br><span class="line">54</span><br><span class="line">55</span><br><span class="line">56</span><br><span class="line">57</span><br></pre></td><td class="code"><pre><span class="line"><span class="comment">/** Mini-transaction handle and buffer */</span></span><br><span class="line"><span class="class"><span class="keyword">struct</span> <span class="title">mtr_t</span> &#123;</span></span><br><span class="line">    <span class="comment">/** State variables of the mtr */</span></span><br><span class="line">    <span class="class"><span class="keyword">struct</span> <span class="title">Impl</span> &#123;</span></span><br><span class="line">        <span class="comment">/** memo stack for locks etc. */</span></span><br><span class="line">        <span class="keyword">mtr_buf_t</span>    m_memo;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** mini-transaction log */</span></span><br><span class="line">        <span class="keyword">mtr_buf_t</span>    m_log;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** true if mtr has made at least one buffer pool page dirty */</span></span><br><span class="line">        <span class="keyword">bool</span>        m_made_dirty;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** true if inside ibuf changes */</span></span><br><span class="line">        <span class="keyword">bool</span>        m_inside_ibuf;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** true if the mini-transaction modified buffer pool pages */</span></span><br><span class="line">        <span class="keyword">bool</span>        m_modifications;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** Count of how many page initial log records have been</span></span><br><span class="line"><span class="comment">        written to the mtr log */</span></span><br><span class="line">        <span class="keyword">ib_uint32_t</span>    m_n_log_recs;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** specifies which operations should be logged; default</span></span><br><span class="line"><span class="comment">        value MTR_LOG_ALL */</span></span><br><span class="line">        <span class="keyword">mtr_log_t</span>    m_log_mode;</span><br><span class="line"><span class="meta">#<span class="meta-keyword">ifdef</span> UNIV_DEBUG</span></span><br><span class="line">        <span class="comment">/** Persistent user tablespace associated with the</span></span><br><span class="line"><span class="comment">        mini-transaction, or 0 (TRX_SYS_SPACE) if none yet */</span></span><br><span class="line">        ulint        m_user_space_id;</span><br><span class="line"><span class="meta">#<span class="meta-keyword">endif</span> <span class="comment">/* UNIV_DEBUG */</span></span></span><br><span class="line">        <span class="comment">/** User tablespace that is being modified by the</span></span><br><span class="line"><span class="comment">        mini-transaction */</span></span><br><span class="line">        <span class="keyword">fil_space_t</span>*    m_user_space;</span><br><span class="line">        <span class="comment">/** Undo tablespace that is being modified by the</span></span><br><span class="line"><span class="comment">        mini-transaction */</span></span><br><span class="line">        <span class="keyword">fil_space_t</span>*    m_undo_space;</span><br><span class="line">        <span class="comment">/** System tablespace if it is being modified by the</span></span><br><span class="line"><span class="comment">        mini-transaction */</span></span><br><span class="line">        <span class="keyword">fil_space_t</span>*    m_sys_space;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** State of the transaction */</span></span><br><span class="line">        <span class="keyword">mtr_state_t</span>    m_state;</span><br><span class="line"></span><br><span class="line">        <span class="comment">/** Flush Observer */</span></span><br><span class="line">        FlushObserver*    m_flush_observer;</span><br><span class="line"></span><br><span class="line"><span class="meta">#<span class="meta-keyword">ifdef</span> UNIV_DEBUG</span></span><br><span class="line">        <span class="comment">/** For checking corruption. */</span></span><br><span class="line">        ulint        m_magic_n;</span><br><span class="line"><span class="meta">#<span class="meta-keyword">endif</span> <span class="comment">/* UNIV_DEBUG */</span></span></span><br><span class="line"></span><br><span class="line">        <span class="comment">/** Owning mini-transaction */</span></span><br><span class="line">        <span class="keyword">mtr_t</span>*        m_mtr;</span><br><span class="line">    &#125;;</span><br><span class="line">    ....</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="重做日志记录类型"><a href="#重做日志记录类型" class="headerlink" title="重做日志记录类型"></a><strong>重做日志记录类型</strong></h3><p>每当我们修改数据库的一个page，一个redo记录就会生成。该记录中既包含了page（物理redolog）中哪些信息被修改了，也包含了如何执行这个修改操作（逻辑redolog）。InnoDB既使用了物理redolog，也使用了逻辑redolog。</p>
+<p>为了理解这个概念，考虑一种操作，比如page重组。如果这个操作生成了一个物理redolog，很可能这个redolog记录的大小与page的大小相等。但是，相反的是InnoDB会为这个操作生成一个逻辑redolog记录，最重要的是这么做会减小redolog记录的大小。在逻辑重做日志记录代表一个页面重组操作的情况下，我们所需要的是唯一标识一个页面的信息，以及页面重组的操作的“类型”。</p>
+<p>因此，每一个redolog记录都有一个类型，在数据库恢复的时候，该类型能够帮助确定所使用或执行的函数，redolog记录必须包含函数所使用的所有参数。</p>
+<h3 id="重做日志记录的生命周期"><a href="#重做日志记录的生命周期" class="headerlink" title="重做日志记录的生命周期"></a><strong>重做日志记录的生命周期</strong></h3><p>一个redolog记录的生命周期如下：</p>
+<ul>
+<li>redolog记录首先被一个MTR产生，并记录在MTR的缓存中，它包含了数据库在恢复时的能够执行相同操作的所有必要信息；</li>
+<li>当mtr_commit()执行完毕后，redolog记录被保存在内存中的全局redolog缓存中，在需要的时候redolog缓存中的redolog记录会被刷到redolog文件中，为后续的redolog记录腾出空间；</li>
+<li>redolog记录关联一个指定的LSN，在执行mtr_commit()时，redolog记录从MTR缓存拷贝到全局日志缓存中时，这种绑定关系被建立起来；一旦这种关系确立后，redolog记录在redolog文件中的位置也就确定下来了；</li>
+<li>当执行wirte+flush操作时，redolog记录从redolog缓存刷到redolog文件中，此时redolog记录是持久化在磁盘上的；</li>
+<li>每一个redolog记录都有一个相关的脏页列表，这种关系是通过LSN建立的，redolog记录必须在它相关的脏页刷盘之前落盘，只有在相关的所有脏页落盘之后，redolog记录才可以被丢弃；</li>
+<li>在数据库恢复的时候，redolog记录可以用来重建相关的脏页列表；</li>
+</ul>
+<h3 id="总结"><a href="#总结" class="headerlink" title="总结"></a><strong>总结</strong></h3><p>本文提供了对InnoDB存储引擎redolog子系统的一个概览。redolog子系统中使用的主要数据结构是MTR, 内存中的redolog缓存以及磁盘上的redolog文件。InnoDB存储引擎跟踪许多LSN的值来保证预写日志（WAL）的正确性。</p>
+<p>对数据库管理系统来说，数据丢失是不可接受的，redolog子系统是保证数据不丢失的关键因素。由于redolog是在DML操作执行时同步生成的，因此必须保证redolog更有效的执行，同时redolog的大小需要尽可能的小。</p>
+
+      
+    </div>
+    
+    
+    
+
+    
+
+    
+      <div>
+        <div style="padding: 10px 0; margin: 20px auto; width: 90%; text-align: center;">
+  <div>如果您觉得有用的话</div>
+  <button id="rewardButton" disable="enable" onclick="var qr = document.getElementById('QR'); if (qr.style.display === 'none') {qr.style.display='block';} else {qr.style.display='none'}">
+    <span>打赏</span>
+  </button>
+  <div id="QR" style="display: none;">
+
+    
+      <div id="wechat" style="display: inline-block">
+        <img id="wechat_qr" src="/images/wechatpay.png" alt="polli 微信支付">
+        <p>微信支付</p>
+      </div>
+    
+
+    
+
+    
+
+  </div>
+</div>
+
+      </div>
+    
+
+    
+      <div>
+        <ul class="post-copyright">
+  <li class="post-copyright-author">
+    <strong>本文作者：</strong>
+    polli
+  </li>
+  <li class="post-copyright-link">
+    <strong>本文链接：</strong>
+    <a href="http://www.pollilog.cn/2017/11/17/redo-logging-in-innodb/" title="『译』InnoDB的重做日志">http://www.pollilog.cn/2017/11/17/redo-logging-in-innodb/</a>
+  </li>
+  <li class="post-copyright-license">
+    <strong>版权声明： </strong>
+    本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/3.0/" rel="external nofollow" target="_blank">CC BY-NC-SA 3.0</a> 许可协议。转载请注明出处！
+  </li>
+</ul>
+
+      </div>
+    
+
+    <footer class="post-footer">
+      
+        <div class="post-tags">
+          
+            <a href="/tags/mysql/" rel="tag"><i class="fa fa-tag"></i> mysql</a>
+          
+            <a href="/tags/InnoDB/" rel="tag"><i class="fa fa-tag"></i> InnoDB</a>
+          
+        </div>
+      
+
+      
+      
+      
+
+      
+        <div class="post-nav">
+          <div class="post-nav-next post-nav-item">
+            
+              <a href="/2017/10/31/innodb-data-organization/" rel="next" title="『译』InnoDB中的数据组织">
+                <i class="fa fa-chevron-left"></i> 『译』InnoDB中的数据组织
+              </a>
+            
+          </div>
+
+          <span class="post-nav-divider"></span>
+
+          <div class="post-nav-prev post-nav-item">
+            
+              <a href="/2017/12/26/test-database-privileges/" rel="prev" title="MySQL中test库默认权限问题">
+                MySQL中test库默认权限问题 <i class="fa fa-chevron-right"></i>
+              </a>
+            
+          </div>
+        </div>
+      
+
+      
+      
+    </footer>
+  </div>
+  
+  
+  
+  </article>
+
+
+
+    <div class="post-spread">
+      
+    </div>
+  </div>
+
+
+          </div>
+          
+
+
+          
+
+  
+    <div class="comments" id="comments">
+      <div id="disqus_thread">
+        <noscript>
+          Please enable JavaScript to view the
+          <a href="https://disqus.com/?ref_noscript">comments powered by Disqus.</a>
+        </noscript>
+      </div>
+    </div>
+
+  
+
+
+
+        </div>
+        
+          
+  
+  <div class="sidebar-toggle">
+    <div class="sidebar-toggle-line-wrap">
+      <span class="sidebar-toggle-line sidebar-toggle-line-first"></span>
+      <span class="sidebar-toggle-line sidebar-toggle-line-middle"></span>
+      <span class="sidebar-toggle-line sidebar-toggle-line-last"></span>
+    </div>
+  </div>
+
+  <aside id="sidebar" class="sidebar">
+    
+    <div class="sidebar-inner">
+
+      
+
+      
+        <ul class="sidebar-nav motion-element">
+          <li class="sidebar-nav-toc sidebar-nav-active" data-target="post-toc-wrap">
+            文章目录
+          </li>
+          <li class="sidebar-nav-overview" data-target="site-overview-wrap">
+            站点概览
+          </li>
+        </ul>
+      
+
+      <section class="site-overview-wrap sidebar-panel">
+        <div class="site-overview">
+          <div class="site-author motion-element" itemprop="author" itemscope itemtype="http://schema.org/Person">
+            
+              <img class="site-author-image" itemprop="image" src="/images/Penguins.jpg" alt="polli">
+            
+              <p class="site-author-name" itemprop="name">polli</p>
+              <p class="site-description motion-element" itemprop="description"></p>
+          </div>
+
+          <nav class="site-state motion-element">
+
+            
+              <div class="site-state-item site-state-posts">
+              
+                <a href="/archives/">
+              
+                  <span class="site-state-item-count">14</span>
+                  <span class="site-state-item-name">日志</span>
+                </a>
+              </div>
+            
+
+            
+              
+              
+              <div class="site-state-item site-state-categories">
+                <a href="/categories/index.html">
+                  <span class="site-state-item-count">5</span>
+                  <span class="site-state-item-name">分类</span>
+                </a>
+              </div>
+            
+
+            
+              
+              
+              <div class="site-state-item site-state-tags">
+                <a href="/tags/index.html">
+                  <span class="site-state-item-count">19</span>
+                  <span class="site-state-item-name">标签</span>
+                </a>
+              </div>
+            
+
+          </nav>
+
+          
+
+          <div class="links-of-author motion-element">
+            
+              
+                <span class="links-of-author-item">
+                  <a href="https://github.com/ly20119" target="_blank" title="GitHub">
+                    
+                      <i class="fa fa-fw fa-github"></i>GitHub</a>
+                </span>
+              
+                <span class="links-of-author-item">
+                  <a href="mailto:leeyanhit@gmail.com" target="_blank" title="E-Mail">
+                    
+                      <i class="fa fa-fw fa-envelope"></i>E-Mail</a>
+                </span>
+              
+            
+          </div>
+
+          
+          
+
+          
+          
+
+          
+
+        </div>
+      </section>
+
+      
+      <!--noindex-->
+        <section class="post-toc-wrap motion-element sidebar-panel sidebar-panel-active">
+          <div class="post-toc">
+
+            
+              
+            
+
+            
+              <div class="post-toc-content"><ol class="nav"><li class="nav-item nav-level-3"><a class="nav-link" href="#前言"><span class="nav-number">1.</span> <span class="nav-text">前言</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#简介"><span class="nav-number">2.</span> <span class="nav-text">简介</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#重做日志的生成"><span class="nav-number">3.</span> <span class="nav-text">重做日志的生成</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#重做日志文件"><span class="nav-number">4.</span> <span class="nav-text">重做日志文件</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#重做日志文件头"><span class="nav-number">5.</span> <span class="nav-text">重做日志文件头</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#log块"><span class="nav-number">6.</span> <span class="nav-text">log块</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#日志序列号-LSN"><span class="nav-number">7.</span> <span class="nav-text">日志序列号(LSN)</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#全局日志系统对象"><span class="nav-number">8.</span> <span class="nav-text">全局日志系统对象</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#全局内存redolog缓存"><span class="nav-number">9.</span> <span class="nav-text">全局内存redolog缓存</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#迷你事务-MTR"><span class="nav-number">10.</span> <span class="nav-text">迷你事务(MTR)</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#重做日志记录类型"><span class="nav-number">11.</span> <span class="nav-text">重做日志记录类型</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#重做日志记录的生命周期"><span class="nav-number">12.</span> <span class="nav-text">重做日志记录的生命周期</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#总结"><span class="nav-number">13.</span> <span class="nav-text">总结</span></a></li></ol></div>
+            
+
+          </div>
+        </section>
+      <!--/noindex-->
+      
+
+      
+
+    </div>
+  </aside>
+
+
+        
+      </div>
+    </main>
+
+    <footer id="footer" class="footer">
+      <div class="footer-inner">
+        <div class="copyright" align="center">&copy; 2017 &mdash; <span itemprop="copyrightYear">2020</span>
+  <span class="with-love">
+    <i class="fa fa-user"></i>
+  </span>
+  <span class="author" itemprop="copyrightHolder">polli</span>
+  
+  <span class="post-meta-divider">|</span>
+  
+  
+
+  
+    <div class="powered-by"><a class="theme-link" target="_blank" href="https://hexo.io">Hexo</a> 驱动</div>
+  
+
+  
+    <span class="post-meta-divider">|</span>
+  
+
+  
+    <div class="theme-info">主题 &mdash; <a class="theme-link" target="_blank" href="https://github.com/iissnan/hexo-theme-next">NexT.Mist</a></div>
+  
+  
+    
+  
+</div>
+
+        
+<div class="busuanzi-count" align="center">
+  <script async src="https://busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
+
+  
+    <span class="site-uv">
+      <i class="fa fa-user"></i> 访问人数
+      <span class="busuanzi-value" id="busuanzi_value_site_uv"></span>
+      
+    </span>
+  
+
+  
+    <span class="site-pv">
+      <i class="fa fa-eye"></i> 总访问量
+      <span class="busuanzi-value" id="busuanzi_value_site_pv"></span>
+      
+    </span>
+  
+</div>
+
+
+
+
+
+
+
+
+        
+      </div>
+    </footer>
+
+    
+      <div class="back-to-top">
+        <i class="fa fa-arrow-up"></i>
+        
+      </div>
+    
+
+    
+
+  </div>
+
+  
+
+<script type="text/javascript">
+  if (Object.prototype.toString.call(window.Promise) !== '[object Function]') {
+    window.Promise = null;
+  }
+</script>
+
+
+
+
+
+
+
+
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+  
+  
+    <script type="text/javascript" src="/lib/jquery/index.js?v=2.1.3"></script>
+  
+
+  
+  
+    <script type="text/javascript" src="/lib/fastclick/lib/fastclick.min.js?v=1.0.6"></script>
+  
+
+  
+  
+    <script type="text/javascript" src="/lib/jquery_lazyload/jquery.lazyload.js?v=1.9.7"></script>
+  
+
+  
+  
+    <script type="text/javascript" src="/lib/velocity/velocity.min.js?v=1.2.1"></script>
+  
+
+  
+  
+    <script type="text/javascript" src="/lib/velocity/velocity.ui.min.js?v=1.2.1"></script>
+  
+
+  
+  
+    <script type="text/javascript" src="/lib/fancybox/source/jquery.fancybox.pack.js?v=2.1.5"></script>
+  
+
+
+  
+
+
+  <script type="text/javascript" src="/js/src/utils.js?v=5.1.3"></script>
+
+  <script type="text/javascript" src="/js/src/motion.js?v=5.1.3"></script>
+
+
+
+  
+  
+
+  
+  <script type="text/javascript" src="/js/src/scrollspy.js?v=5.1.3"></script>
+<script type="text/javascript" src="/js/src/post-details.js?v=5.1.3"></script>
+
+
+
+  
+
+
+  <script type="text/javascript" src="/js/src/bootstrap.js?v=5.1.3"></script>
+
+
+
+  
+
+
+  
+
+    
+      <script id="dsq-count-scr" src="https://pollilog.disqus.com/count.js" async></script>
+    
+
+    
+      <script type="text/javascript">
+        var disqus_config = function () {
+          this.page.url = 'http://www.pollilog.cn/2017/11/17/redo-logging-in-innodb/';
+          this.page.identifier = '2017/11/17/redo-logging-in-innodb/';
+          this.page.title = '『译』InnoDB的重做日志';
+        };
+        var d = document, s = d.createElement('script');
+        s.src = 'https://pollilog.disqus.com/embed.js';
+        s.setAttribute('data-timestamp', '' + +new Date());
+        (d.head || d.body).appendChild(s);
+      </script>
+    
+
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  
+
+  <script type="text/javascript">
+    // Popup Window;
+    var isfetched = false;
+    var isXml = true;
+    // Search DB path;
+    var search_path = "search.xml";
+    if (search_path.length === 0) {
+      search_path = "search.xml";
+    } else if (/json$/i.test(search_path)) {
+      isXml = false;
+    }
+    var path = "/" + search_path;
+    // monitor main search box;
+
+    var onPopupClose = function (e) {
+      $('.popup').hide();
+      $('#local-search-input').val('');
+      $('.search-result-list').remove();
+      $('#no-result').remove();
+      $(".local-search-pop-overlay").remove();
+      $('body').css('overflow', '');
+    }
+
+    function proceedsearch() {
+      $("body")
+        .append('<div class="search-popup-overlay local-search-pop-overlay"></div>')
+        .css('overflow', 'hidden');
+      $('.search-popup-overlay').click(onPopupClose);
+      $('.popup').toggle();
+      var $localSearchInput = $('#local-search-input');
+      $localSearchInput.attr("autocapitalize", "none");
+      $localSearchInput.attr("autocorrect", "off");
+      $localSearchInput.focus();
+    }
+
+    // search function;
+    var searchFunc = function(path, search_id, content_id) {
+      'use strict';
+
+      // start loading animation
+      $("body")
+        .append('<div class="search-popup-overlay local-search-pop-overlay">' +
+          '<div id="search-loading-icon">' +
+          '<i class="fa fa-spinner fa-pulse fa-5x fa-fw"></i>' +
+          '</div>' +
+          '</div>')
+        .css('overflow', 'hidden');
+      $("#search-loading-icon").css('margin', '20% auto 0 auto').css('text-align', 'center');
+
+      $.ajax({
+        url: path,
+        dataType: isXml ? "xml" : "json",
+        async: true,
+        success: function(res) {
+          // get the contents from search data
+          isfetched = true;
+          $('.popup').detach().appendTo('.header-inner');
+          var datas = isXml ? $("entry", res).map(function() {
+            return {
+              title: $("title", this).text(),
+              content: $("content",this).text(),
+              url: $("url" , this).text()
+            };
+          }).get() : res;
+          var input = document.getElementById(search_id);
+          var resultContent = document.getElementById(content_id);
+          var inputEventFunction = function() {
+            var searchText = input.value.trim().toLowerCase();
+            var keywords = searchText.split(/[\s\-]+/);
+            if (keywords.length > 1) {
+              keywords.push(searchText);
+            }
+            var resultItems = [];
+            if (searchText.length > 0) {
+              // perform local searching
+              datas.forEach(function(data) {
+                var isMatch = false;
+                var hitCount = 0;
+                var searchTextCount = 0;
+                var title = data.title.trim();
+                var titleInLowerCase = title.toLowerCase();
+                var content = data.content.trim().replace(/<[^>]+>/g,"");
+                var contentInLowerCase = content.toLowerCase();
+                var articleUrl = decodeURIComponent(data.url);
+                var indexOfTitle = [];
+                var indexOfContent = [];
+                // only match articles with not empty titles
+                if(title != '') {
+                  keywords.forEach(function(keyword) {
+                    function getIndexByWord(word, text, caseSensitive) {
+                      var wordLen = word.length;
+                      if (wordLen === 0) {
+                        return [];
+                      }
+                      var startPosition = 0, position = [], index = [];
+                      if (!caseSensitive) {
+                        text = text.toLowerCase();
+                        word = word.toLowerCase();
+                      }
+                      while ((position = text.indexOf(word, startPosition)) > -1) {
+                        index.push({position: position, word: word});
+                        startPosition = position + wordLen;
+                      }
+                      return index;
+                    }
+
+                    indexOfTitle = indexOfTitle.concat(getIndexByWord(keyword, titleInLowerCase, false));
+                    indexOfContent = indexOfContent.concat(getIndexByWord(keyword, contentInLowerCase, false));
+                  });
+                  if (indexOfTitle.length > 0 || indexOfContent.length > 0) {
+                    isMatch = true;
+                    hitCount = indexOfTitle.length + indexOfContent.length;
+                  }
+                }
+
+                // show search results
+
+                if (isMatch) {
+                  // sort index by position of keyword
+
+                  [indexOfTitle, indexOfContent].forEach(function (index) {
+                    index.sort(function (itemLeft, itemRight) {
+                      if (itemRight.position !== itemLeft.position) {
+                        return itemRight.position - itemLeft.position;
+                      } else {
+                        return itemLeft.word.length - itemRight.word.length;
+                      }
+                    });
+                  });
+
+                  // merge hits into slices
+
+                  function mergeIntoSlice(text, start, end, index) {
+                    var item = index[index.length - 1];
+                    var position = item.position;
+                    var word = item.word;
+                    var hits = [];
+                    var searchTextCountInSlice = 0;
+                    while (position + word.length <= end && index.length != 0) {
+                      if (word === searchText) {
+                        searchTextCountInSlice++;
+                      }
+                      hits.push({position: position, length: word.length});
+                      var wordEnd = position + word.length;
+
+                      // move to next position of hit
+
+                      index.pop();
+                      while (index.length != 0) {
+                        item = index[index.length - 1];
+                        position = item.position;
+                        word = item.word;
+                        if (wordEnd > position) {
+                          index.pop();
+                        } else {
+                          break;
+                        }
+                      }
+                    }
+                    searchTextCount += searchTextCountInSlice;
+                    return {
+                      hits: hits,
+                      start: start,
+                      end: end,
+                      searchTextCount: searchTextCountInSlice
+                    };
+                  }
+
+                  var slicesOfTitle = [];
+                  if (indexOfTitle.length != 0) {
+                    slicesOfTitle.push(mergeIntoSlice(title, 0, title.length, indexOfTitle));
+                  }
+
+                  var slicesOfContent = [];
+                  while (indexOfContent.length != 0) {
+                    var item = indexOfContent[indexOfContent.length - 1];
+                    var position = item.position;
+                    var word = item.word;
+                    // cut out 100 characters
+                    var start = position - 20;
+                    var end = position + 80;
+                    if(start < 0){
+                      start = 0;
+                    }
+                    if (end < position + word.length) {
+                      end = position + word.length;
+                    }
+                    if(end > content.length){
+                      end = content.length;
+                    }
+                    slicesOfContent.push(mergeIntoSlice(content, start, end, indexOfContent));
+                  }
+
+                  // sort slices in content by search text's count and hits' count
+
+                  slicesOfContent.sort(function (sliceLeft, sliceRight) {
+                    if (sliceLeft.searchTextCount !== sliceRight.searchTextCount) {
+                      return sliceRight.searchTextCount - sliceLeft.searchTextCount;
+                    } else if (sliceLeft.hits.length !== sliceRight.hits.length) {
+                      return sliceRight.hits.length - sliceLeft.hits.length;
+                    } else {
+                      return sliceLeft.start - sliceRight.start;
+                    }
+                  });
+
+                  // select top N slices in content
+
+                  var upperBound = parseInt('1');
+                  if (upperBound >= 0) {
+                    slicesOfContent = slicesOfContent.slice(0, upperBound);
+                  }
+
+                  // highlight title and content
+
+                  function highlightKeyword(text, slice) {
+                    var result = '';
+                    var prevEnd = slice.start;
+                    slice.hits.forEach(function (hit) {
+                      result += text.substring(prevEnd, hit.position);
+                      var end = hit.position + hit.length;
+                      result += '<b class="search-keyword">' + text.substring(hit.position, end) + '</b>';
+                      prevEnd = end;
+                    });
+                    result += text.substring(prevEnd, slice.end);
+                    return result;
+                  }
+
+                  var resultItem = '';
+
+                  if (slicesOfTitle.length != 0) {
+                    resultItem += "<li><a href='" + articleUrl + "' class='search-result-title'>" + highlightKeyword(title, slicesOfTitle[0]) + "</a>";
+                  } else {
+                    resultItem += "<li><a href='" + articleUrl + "' class='search-result-title'>" + title + "</a>";
+                  }
+
+                  slicesOfContent.forEach(function (slice) {
+                    resultItem += "<a href='" + articleUrl + "'>" +
+                      "<p class=\"search-result\">" + highlightKeyword(content, slice) +
+                      "...</p>" + "</a>";
+                  });
+
+                  resultItem += "</li>";
+                  resultItems.push({
+                    item: resultItem,
+                    searchTextCount: searchTextCount,
+                    hitCount: hitCount,
+                    id: resultItems.length
+                  });
+                }
+              })
+            };
+            if (keywords.length === 1 && keywords[0] === "") {
+              resultContent.innerHTML = '<div id="no-result"><i class="fa fa-search fa-5x" /></div>'
+            } else if (resultItems.length === 0) {
+              resultContent.innerHTML = '<div id="no-result"><i class="fa fa-frown-o fa-5x" /></div>'
+            } else {
+              resultItems.sort(function (resultLeft, resultRight) {
+                if (resultLeft.searchTextCount !== resultRight.searchTextCount) {
+                  return resultRight.searchTextCount - resultLeft.searchTextCount;
+                } else if (resultLeft.hitCount !== resultRight.hitCount) {
+                  return resultRight.hitCount - resultLeft.hitCount;
+                } else {
+                  return resultRight.id - resultLeft.id;
+                }
+              });
+              var searchResultList = '<ul class=\"search-result-list\">';
+              resultItems.forEach(function (result) {
+                searchResultList += result.item;
+              })
+              searchResultList += "</ul>";
+              resultContent.innerHTML = searchResultList;
+            }
+          }
+
+          if ('auto' === 'auto') {
+            input.addEventListener('input', inputEventFunction);
+          } else {
+            $('.search-icon').click(inputEventFunction);
+            input.addEventListener('keypress', function (event) {
+              if (event.keyCode === 13) {
+                inputEventFunction();
+              }
+            });
+          }
+
+          // remove loading animation
+          $(".local-search-pop-overlay").remove();
+          $('body').css('overflow', '');
+
+          proceedsearch();
+        }
+      });
+    }
+
+    // handle and trigger popup window;
+    $('.popup-trigger').click(function(e) {
+      e.stopPropagation();
+      if (isfetched === false) {
+        searchFunc(path, 'local-search-input', 'local-search-result');
+      } else {
+        proceedsearch();
+      };
+    });
+
+    $('.popup-btn-close').click(onPopupClose);
+    $('.popup').click(function(e){
+      e.stopPropagation();
+    });
+    $(document).on('keyup', function (event) {
+      var shouldDismissSearchPopup = event.which === 27 &&
+        $('.search-popup').is(':visible');
+      if (shouldDismissSearchPopup) {
+        onPopupClose();
+      }
+    });
+  </script>
+
+
+
+
+
+  
+
+  
+<script>
+(function(){
+    var bp = document.createElement('script');
+    var curProtocol = window.location.protocol.split(':')[0];
+    if (curProtocol === 'https') {
+        bp.src = 'https://zz.bdstatic.com/linksubmit/push.js';        
+    }
+    else {
+        bp.src = 'http://push.zhanzhang.baidu.com/push.js';
+    }
+    var s = document.getElementsByTagName("script")[0];
+    s.parentNode.insertBefore(bp, s);
+})();
+</script>
+
+
+  
+  
+
+  
+
+  
+
+  
+
+</body>
+</html>
