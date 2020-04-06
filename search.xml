@@ -227,12 +227,6 @@
       </tags>
   </entry>
   <entry>
-    <title>你好，世界</title>
-    <url>/2017/03/11/hello-world/</url>
-    <content><![CDATA[<p>我的第一篇文章</p>
-]]></content>
-  </entry>
-  <entry>
     <title>做事</title>
     <url>/2017/06/09/do-thing/</url>
     <content><![CDATA[<p>1.核心问题是什么？（只能有一个，如果有很多，找到最重要的那个）</p>
@@ -254,137 +248,10 @@
       </tags>
   </entry>
   <entry>
-    <title>MySQL实战笔记--理解行锁</title>
-    <url>/2019/04/04/mysql-row-lock/</url>
-    <content><![CDATA[<h2 id="知识点"><a href="#知识点" class="headerlink" title="知识点"></a>知识点</h2><ul>
-<li>行锁是在引擎层实现的，不是所有的引擎都实现了行锁，比如MyISAM引擎就不支持行锁；</li>
-<li>行锁相比表锁，锁粒度更小，所以并发性能更好，所以，对应对并发有要求的业务，推荐不要使用MyISAM引擎；</li>
-<li>在InnoDB事务中，行锁是需要时才加上的，但并不是不需要了就立刻释放，只有在事务结束的时候才释放掉，这个过程叫两阶段锁协议；</li>
-</ul>
-<a id="more"></a>
-
-<ul>
-<li>建议：如果在一个事务中需要多个行锁，建议把最可能造成锁冲突，最可能影响并发度的锁尽量往后放；</li>
-<li>由于锁和并发的问题，存在死锁的可能性，InnoDB中采用两种方式处理死锁：innodb_lock_wait_timeout和innodb_deadlock_detect；</li>
-<li>innodb_lock_wait_timeout表示出现死锁时，等待一定时间后自动退出，并释放已经持有的所有锁，这样其他线程就可以抢到锁了，这个超时时间默认是50s；该值不能设置太小，会导致短时等待的锁被误伤；<strong>开启这种策略时，对业务是有损的</strong>；</li>
-<li>innodb_deadlock_detect表示是否开启死锁检测，为on时开启，默认为on，开启时，事务在执行前会发起死锁检测，发现死锁后，回滚掉锁链条中某个事物，使其他事务得以继续；死锁检测的时间复杂度是O(n)，所以开启的代价是占用过多的CPU，导致性能下降；</li>
-<li>从业务角度来看，降低死锁的几个思路：<ul>
-<li>如果确保业务不会出现死锁，可以把死锁检测关掉，带来的风险是，出现死锁时，需要等待超时后回滚，对业务有损；</li>
-<li>控制并发度，保证时间复杂度较低，风险是，单个应用的并发度较低，但是在应用很多的情况下，并发度依旧很高，没有根本解决死锁问题；</li>
-<li>逻辑上把热点行改成多行，降低死锁概率，但是需要业务实现额外的特殊处理逻辑，使得业务逻辑复杂化；</li>
-</ul>
-</li>
-<li>如果有使用中间件，可以在中间件层实现并发控制；</li>
-<li>最终方案，修改MySQL内核代码，基本思路是，对同一行的更新进行排队；</li>
-</ul>
-<h2 id="案例分析"><a href="#案例分析" class="headerlink" title="案例分析"></a>案例分析</h2><ul>
-<li><p>问题：在备库上使用mysqldump –single-transaction做逻辑备份，如果同时在主库对一个小表做DDL，会有什么影响？</p>
-</li>
-<li><p>思路：深入理解mysqldump的备份过程</p>
-<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">Q1:SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;</span><br><span class="line">Q2:START TRANSACTION WITH CONSISTENT SNAPSHOT；</span><br><span class="line">/* other tables */</span><br><span class="line">Q3:SAVEPOINT sp;</span><br><span class="line">/* 时刻 1 */</span><br><span class="line">Q4:show create table `t1`;</span><br><span class="line">/* 时刻 2 */</span><br><span class="line">Q5:SELECT * FROM `t1`;</span><br><span class="line">/* 时刻 3 */</span><br><span class="line">Q6:ROLLBACK TO SAVEPOINT sp;</span><br><span class="line">/* 时刻 4 */</span><br><span class="line">/* other tables */</span><br></pre></td></tr></table></figure>
-</li>
-<li><p>说明</p>
-<ul>
-<li>为了得到所有表的一致性读，所以修改session隔离级别为RR；</li>
-<li>在启动事务时使用WITH CONSISTENT SNAPSHOT，可以保证语句执行完可以得到一个一致性视图；</li>
-<li>设置事务保存点（作用是在事务内部分割成逻辑上的几个部分，事务失败时可将事务状态恢复到该保存点）；</li>
-<li>获取表结构；</li>
-<li>获取表中数据；</li>
-<li>将事务回滚到保存点的状态，主要是为了释放当前表上的MDL锁；</li>
-</ul>
-</li>
-<li><p>解答</p>
-<ul>
-<li>如果DDL在时刻1执行，则无影响，此时备份的是修改后的表结构和数据；</li>
-<li>如果DDL在时刻2执行，则mysqldump会在Q5报错退出；（schema错误）</li>
-<li>如果DDL在时刻3执行，则由于mysqldump已经拿到该表的MDL锁，则DDL需要等待，整个SQL线程阻塞，会导致主从差距变大；SQL线程会一直等到Q6执行完才能继续；</li>
-<li>如果DDL在时刻4执行，则无影响，此时备份的是修改前的表结构和数据；</li>
-</ul>
-</li>
-<li><p>其他思考</p>
-<ul>
-<li><p>实际上，在mysqldump备份时，在Q1之前，还有两条语句需要执行：</p>
-<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">FLUSH TABLES;</span><br><span class="line">FLUSH TABLES WITH READ LOCK;</span><br></pre></td></tr></table></figure>
-</li>
-<li><p><code>flush tables</code>的作用是：1.关闭打开的表，失效缓存，同时刷脏；2.等待所有事务的提交，以保证第二条语句尽快执行完；</p>
-</li>
-<li><p>如果DDL在<code>flush tables</code>之前执行，则<code>flush tables</code>会等待DDL完成后才执行，备份数据为修改后的表结构和数据；</p>
-</li>
-<li><p>如果DDL在两个语句之间，则同样，FTWRL会被阻塞，等到DDL完成后才执行，备份数据为修改后的表结构和数据；</p>
-</li>
-</ul>
-</li>
-</ul>
+    <title>你好，世界</title>
+    <url>/2017/03/11/hello-world/</url>
+    <content><![CDATA[<p>我的第一篇文章</p>
 ]]></content>
-      <categories>
-        <category>mysql</category>
-      </categories>
-      <tags>
-        <tag>mysql</tag>
-        <tag>innodb</tag>
-        <tag>lock</tag>
-      </tags>
-  </entry>
-  <entry>
-    <title>如何使用系统调用mount挂载NFS</title>
-    <url>/2018/11/02/mount-nfs-use-system-call/</url>
-    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近一直在使用NFS做一些开发和测试，功能开发完毕后，需要对NFS的可用性做一些监控，没有使用crontab+shell脚本的方式，总觉得这么做的都是临时方案，不成体系，所以就基于现有的框架写了一个轻量级的服务。具体的监控事项包括NFS的挂载和卸载、基本的读写、剩余空间等，发现异常后给出告警提示。基本的功能比较简单，但是在开发的时候却遇到一个问题：<br>在C++代码中，如何使用系统调用mount()来挂载NFS？</p>
-<a id="more"></a>
-
-<h3 id="讨论"><a href="#讨论" class="headerlink" title="讨论"></a><strong>讨论</strong></h3><p>我们都知道，在Linux命令行下，使用系统工具mount可以很简单的完成这个事情：</p>
-<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">mount -t nfs 10.10.123.101:/vbumjko7 -o "vers=3,nolock,proto=tcp"</span><br></pre></td></tr></table></figure>
-
-<p>但是在C++代码中怎么搞呢？方法大致如下：</p>
-<ul>
-<li>调用system执行mount命令</li>
-<li>调用popen执行mount命令</li>
-<li>调用系统API函数mount()</li>
-</ul>
-<h3 id="探索"><a href="#探索" class="headerlink" title="探索"></a><strong>探索</strong></h3><p>system和popen的方式都是起子进程执行shell命令来完成挂载任务，这样本质上跟直接使用shell命令没有区别，且实现上比shell更复杂（你还要编译、调试），所以不会采用。<br>使用mount API怎么做呢？man了一下mount，原型如下：</p>
-<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">mount</span><span class="params">(<span class="keyword">const</span> <span class="keyword">char</span> *source, <span class="keyword">const</span> <span class="keyword">char</span> *target,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">char</span> *filesystemtype, <span class="keyword">unsigned</span> <span class="keyword">long</span> mountflags,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">void</span> *data)</span></span>;</span><br></pre></td></tr></table></figure>
-
-<p>说明：</p>
-<blockquote>
-<ul>
-<li>source – 表示需要挂载的设备或者目录；</li>
-<li>target – 表示目标挂载点（一个目录，比如/mnt/test_nfs）；</li>
-<li>filesystemtype – 表示需要挂载的文件系统类型，比如”ext2”, “ext3”, “jfs”, “xfs”, “nfs”等，我们这里是”nfs”；</li>
-<li>mountflags – 表示用来控制mount行为的标识掩码；</li>
-<li>data – 依据挂载的文件系统类型，指定相关的挂载选项；</li>
-</ul>
-</blockquote>
-<p>看上去很简单就可以完成，比如我们这样：</p>
-<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<p>编译运行，意想不到的输出：</p>
-<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">ERROR: mount failed: Invalid Argument</span><br></pre></td></tr></table></figure>
-
-<p>参数都是根据手册填的，哪里出错了呢？</p>
-<h3 id="解决"><a href="#解决" class="headerlink" title="解决"></a><strong>解决</strong></h3><p>谷歌找一下，发现在stackoverflow上有一个一样的问题：<a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">NFS mount System Call in linux</a><br>答主的意思是：</p>
-<blockquote>
-<p>首先，对于没有看到任何关于使用mount调用来挂载nfs的手册表示诧异。然后，深入到mount工具的源码实现，发现在挂载nfs时，解析对应的nfs挂载选项中有个Opt_addr，该字段对应挂载选项中的addr选项。为了使mount函数正常运行，应该在挂载选项中添加addr=x.x.x.x；</p>
-</blockquote>
-<p>原因很明显了，我们缺少了must选项addr，修改代码，添加该选项后，代码为：</p>
-<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<p>编译运行，啊哈，挂载成功！<br>至此问题解决。</p>
-<h3 id="附录"><a href="#附录" class="headerlink" title="附录"></a><strong>附录</strong></h3><p>附上测试代码如下：</p>
-<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/mount.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;errno.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;string.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* src  = <span class="string">"10.10.123.101:/vbumjko7"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* trgt = <span class="string">"/mnt/test_nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* type = <span class="string">"nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">unsigned</span> <span class="keyword">long</span> mntflags = <span class="number">0</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* opts = <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">int</span> result = mount(src, trgt, type, mntflags, opts);</span><br><span class="line"></span><br><span class="line">   <span class="keyword">if</span> (result == <span class="number">0</span>)</span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Mount created at %s...\n"</span>, trgt);</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Press &lt;return&gt; to unmount the volume: "</span>);</span><br><span class="line">      getchar();</span><br><span class="line">      umount(trgt);</span><br><span class="line">   &#125;</span><br><span class="line">   <span class="keyword">else</span></span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Error : Failed to mount %s\n"</span></span><br><span class="line">             <span class="string">"Reason: %s [%d]\n"</span>,</span><br><span class="line">             src, strerror(errno), errno);</span><br><span class="line">      <span class="keyword">return</span> <span class="number">-1</span>;</span><br><span class="line">   &#125;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
-<li><a href="http://man7.org/linux/man-pages/man2/mount.2.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man2/mount.2.html</a></li>
-<li><a href="http://man7.org/linux/man-pages/man5/nfs.5.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man5/nfs.5.html</a></li>
-<li><a href="https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/" target="_blank" rel="noopener">https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/</a></li>
-<li><a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux</a></li>
-</ul>
-]]></content>
-      <categories>
-        <category>底层技术</category>
-      </categories>
-      <tags>
-        <tag>Linux</tag>
-        <tag>NFS</tag>
-      </tags>
   </entry>
   <entry>
     <title>『译』InnoDB中的数据组织</title>
@@ -570,6 +437,139 @@
       </tags>
   </entry>
   <entry>
+    <title>如何使用系统调用mount挂载NFS</title>
+    <url>/2018/11/02/mount-nfs-use-system-call/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近一直在使用NFS做一些开发和测试，功能开发完毕后，需要对NFS的可用性做一些监控，没有使用crontab+shell脚本的方式，总觉得这么做的都是临时方案，不成体系，所以就基于现有的框架写了一个轻量级的服务。具体的监控事项包括NFS的挂载和卸载、基本的读写、剩余空间等，发现异常后给出告警提示。基本的功能比较简单，但是在开发的时候却遇到一个问题：<br>在C++代码中，如何使用系统调用mount()来挂载NFS？</p>
+<a id="more"></a>
+
+<h3 id="讨论"><a href="#讨论" class="headerlink" title="讨论"></a><strong>讨论</strong></h3><p>我们都知道，在Linux命令行下，使用系统工具mount可以很简单的完成这个事情：</p>
+<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">mount -t nfs 10.10.123.101:/vbumjko7 -o "vers=3,nolock,proto=tcp"</span><br></pre></td></tr></table></figure>
+
+<p>但是在C++代码中怎么搞呢？方法大致如下：</p>
+<ul>
+<li>调用system执行mount命令</li>
+<li>调用popen执行mount命令</li>
+<li>调用系统API函数mount()</li>
+</ul>
+<h3 id="探索"><a href="#探索" class="headerlink" title="探索"></a><strong>探索</strong></h3><p>system和popen的方式都是起子进程执行shell命令来完成挂载任务，这样本质上跟直接使用shell命令没有区别，且实现上比shell更复杂（你还要编译、调试），所以不会采用。<br>使用mount API怎么做呢？man了一下mount，原型如下：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">mount</span><span class="params">(<span class="keyword">const</span> <span class="keyword">char</span> *source, <span class="keyword">const</span> <span class="keyword">char</span> *target,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">char</span> *filesystemtype, <span class="keyword">unsigned</span> <span class="keyword">long</span> mountflags,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">void</span> *data)</span></span>;</span><br></pre></td></tr></table></figure>
+
+<p>说明：</p>
+<blockquote>
+<ul>
+<li>source – 表示需要挂载的设备或者目录；</li>
+<li>target – 表示目标挂载点（一个目录，比如/mnt/test_nfs）；</li>
+<li>filesystemtype – 表示需要挂载的文件系统类型，比如”ext2”, “ext3”, “jfs”, “xfs”, “nfs”等，我们这里是”nfs”；</li>
+<li>mountflags – 表示用来控制mount行为的标识掩码；</li>
+<li>data – 依据挂载的文件系统类型，指定相关的挂载选项；</li>
+</ul>
+</blockquote>
+<p>看上去很简单就可以完成，比如我们这样：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>编译运行，意想不到的输出：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">ERROR: mount failed: Invalid Argument</span><br></pre></td></tr></table></figure>
+
+<p>参数都是根据手册填的，哪里出错了呢？</p>
+<h3 id="解决"><a href="#解决" class="headerlink" title="解决"></a><strong>解决</strong></h3><p>谷歌找一下，发现在stackoverflow上有一个一样的问题：<a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">NFS mount System Call in linux</a><br>答主的意思是：</p>
+<blockquote>
+<p>首先，对于没有看到任何关于使用mount调用来挂载nfs的手册表示诧异。然后，深入到mount工具的源码实现，发现在挂载nfs时，解析对应的nfs挂载选项中有个Opt_addr，该字段对应挂载选项中的addr选项。为了使mount函数正常运行，应该在挂载选项中添加addr=x.x.x.x；</p>
+</blockquote>
+<p>原因很明显了，我们缺少了must选项addr，修改代码，添加该选项后，代码为：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>编译运行，啊哈，挂载成功！<br>至此问题解决。</p>
+<h3 id="附录"><a href="#附录" class="headerlink" title="附录"></a><strong>附录</strong></h3><p>附上测试代码如下：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/mount.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;errno.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;string.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* src  = <span class="string">"10.10.123.101:/vbumjko7"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* trgt = <span class="string">"/mnt/test_nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* type = <span class="string">"nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">unsigned</span> <span class="keyword">long</span> mntflags = <span class="number">0</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* opts = <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">int</span> result = mount(src, trgt, type, mntflags, opts);</span><br><span class="line"></span><br><span class="line">   <span class="keyword">if</span> (result == <span class="number">0</span>)</span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Mount created at %s...\n"</span>, trgt);</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Press &lt;return&gt; to unmount the volume: "</span>);</span><br><span class="line">      getchar();</span><br><span class="line">      umount(trgt);</span><br><span class="line">   &#125;</span><br><span class="line">   <span class="keyword">else</span></span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Error : Failed to mount %s\n"</span></span><br><span class="line">             <span class="string">"Reason: %s [%d]\n"</span>,</span><br><span class="line">             src, strerror(errno), errno);</span><br><span class="line">      <span class="keyword">return</span> <span class="number">-1</span>;</span><br><span class="line">   &#125;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
+<li><a href="http://man7.org/linux/man-pages/man2/mount.2.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man2/mount.2.html</a></li>
+<li><a href="http://man7.org/linux/man-pages/man5/nfs.5.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man5/nfs.5.html</a></li>
+<li><a href="https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/" target="_blank" rel="noopener">https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/</a></li>
+<li><a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>底层技术</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+        <tag>NFS</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>MySQL实战笔记--理解行锁</title>
+    <url>/2019/04/04/mysql-row-lock/</url>
+    <content><![CDATA[<h2 id="知识点"><a href="#知识点" class="headerlink" title="知识点"></a>知识点</h2><ul>
+<li>行锁是在引擎层实现的，不是所有的引擎都实现了行锁，比如MyISAM引擎就不支持行锁；</li>
+<li>行锁相比表锁，锁粒度更小，所以并发性能更好，所以，对应对并发有要求的业务，推荐不要使用MyISAM引擎；</li>
+<li>在InnoDB事务中，行锁是需要时才加上的，但并不是不需要了就立刻释放，只有在事务结束的时候才释放掉，这个过程叫两阶段锁协议；</li>
+</ul>
+<a id="more"></a>
+
+<ul>
+<li>建议：如果在一个事务中需要多个行锁，建议把最可能造成锁冲突，最可能影响并发度的锁尽量往后放；</li>
+<li>由于锁和并发的问题，存在死锁的可能性，InnoDB中采用两种方式处理死锁：innodb_lock_wait_timeout和innodb_deadlock_detect；</li>
+<li>innodb_lock_wait_timeout表示出现死锁时，等待一定时间后自动退出，并释放已经持有的所有锁，这样其他线程就可以抢到锁了，这个超时时间默认是50s；该值不能设置太小，会导致短时等待的锁被误伤；<strong>开启这种策略时，对业务是有损的</strong>；</li>
+<li>innodb_deadlock_detect表示是否开启死锁检测，为on时开启，默认为on，开启时，事务在执行前会发起死锁检测，发现死锁后，回滚掉锁链条中某个事物，使其他事务得以继续；死锁检测的时间复杂度是O(n)，所以开启的代价是占用过多的CPU，导致性能下降；</li>
+<li>从业务角度来看，降低死锁的几个思路：<ul>
+<li>如果确保业务不会出现死锁，可以把死锁检测关掉，带来的风险是，出现死锁时，需要等待超时后回滚，对业务有损；</li>
+<li>控制并发度，保证时间复杂度较低，风险是，单个应用的并发度较低，但是在应用很多的情况下，并发度依旧很高，没有根本解决死锁问题；</li>
+<li>逻辑上把热点行改成多行，降低死锁概率，但是需要业务实现额外的特殊处理逻辑，使得业务逻辑复杂化；</li>
+</ul>
+</li>
+<li>如果有使用中间件，可以在中间件层实现并发控制；</li>
+<li>最终方案，修改MySQL内核代码，基本思路是，对同一行的更新进行排队；</li>
+</ul>
+<h2 id="案例分析"><a href="#案例分析" class="headerlink" title="案例分析"></a>案例分析</h2><ul>
+<li><p>问题：在备库上使用mysqldump –single-transaction做逻辑备份，如果同时在主库对一个小表做DDL，会有什么影响？</p>
+</li>
+<li><p>思路：深入理解mysqldump的备份过程</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">Q1:SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;</span><br><span class="line">Q2:START TRANSACTION WITH CONSISTENT SNAPSHOT；</span><br><span class="line">/* other tables */</span><br><span class="line">Q3:SAVEPOINT sp;</span><br><span class="line">/* 时刻 1 */</span><br><span class="line">Q4:show create table `t1`;</span><br><span class="line">/* 时刻 2 */</span><br><span class="line">Q5:SELECT * FROM `t1`;</span><br><span class="line">/* 时刻 3 */</span><br><span class="line">Q6:ROLLBACK TO SAVEPOINT sp;</span><br><span class="line">/* 时刻 4 */</span><br><span class="line">/* other tables */</span><br></pre></td></tr></table></figure>
+</li>
+<li><p>说明</p>
+<ul>
+<li>为了得到所有表的一致性读，所以修改session隔离级别为RR；</li>
+<li>在启动事务时使用WITH CONSISTENT SNAPSHOT，可以保证语句执行完可以得到一个一致性视图；</li>
+<li>设置事务保存点（作用是在事务内部分割成逻辑上的几个部分，事务失败时可将事务状态恢复到该保存点）；</li>
+<li>获取表结构；</li>
+<li>获取表中数据；</li>
+<li>将事务回滚到保存点的状态，主要是为了释放当前表上的MDL锁；</li>
+</ul>
+</li>
+<li><p>解答</p>
+<ul>
+<li>如果DDL在时刻1执行，则无影响，此时备份的是修改后的表结构和数据；</li>
+<li>如果DDL在时刻2执行，则mysqldump会在Q5报错退出；（schema错误）</li>
+<li>如果DDL在时刻3执行，则由于mysqldump已经拿到该表的MDL锁，则DDL需要等待，整个SQL线程阻塞，会导致主从差距变大；SQL线程会一直等到Q6执行完才能继续；</li>
+<li>如果DDL在时刻4执行，则无影响，此时备份的是修改前的表结构和数据；</li>
+</ul>
+</li>
+<li><p>其他思考</p>
+<ul>
+<li><p>实际上，在mysqldump备份时，在Q1之前，还有两条语句需要执行：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">FLUSH TABLES;</span><br><span class="line">FLUSH TABLES WITH READ LOCK;</span><br></pre></td></tr></table></figure>
+</li>
+<li><p><code>flush tables</code>的作用是：1.关闭打开的表，失效缓存，同时刷脏；2.等待所有事务的提交，以保证第二条语句尽快执行完；</p>
+</li>
+<li><p>如果DDL在<code>flush tables</code>之前执行，则<code>flush tables</code>会等待DDL完成后才执行，备份数据为修改后的表结构和数据；</p>
+</li>
+<li><p>如果DDL在两个语句之间，则同样，FTWRL会被阻塞，等到DDL完成后才执行，备份数据为修改后的表结构和数据；</p>
+</li>
+</ul>
+</li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+        <tag>innodb</tag>
+        <tag>lock</tag>
+      </tags>
+  </entry>
+  <entry>
     <title>C语言中varargs引起的一个小bug</title>
     <url>/2018/07/08/one-bug-of-varargs-in-c-language/</url>
     <content><![CDATA[<h3 id="问题描述及定位"><a href="#问题描述及定位" class="headerlink" title="问题描述及定位"></a><strong>问题描述及定位</strong></h3><p>上周做测试时遇到一个比较奇怪的问题，也不算是bug，只能说是c语言的缺陷。具体是这样的，我们自己封装了一个字符串的append函数，参数是可变参数列表，最后一个参数必须是NULL结尾，原型如下：</p>
@@ -656,6 +656,73 @@
         <tag>mysql</tag>
         <tag>Gtid</tag>
         <tag>LogEvent</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>MySQL中test库默认权限问题</title>
+    <url>/2017/12/26/test-database-privileges/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近在测试MySQL用户权限相关的事情，发现用户在无任何权限的情况下，是可以随意操作test库的。在此记录一下该问题及其原因。</p>
+<a id="more"></a>
+
+<h3 id="问题描述"><a href="#问题描述" class="headerlink" title="问题描述"></a><strong>问题描述</strong></h3><p>安装一个MySQL版本为5.6的新实例，创建了一个test2的用户。用户在创建后，默认是没有任何权限的，如下图：</p>
+<p><img src="/images/2717a7d9-8b1e-4df0-952a-038cb6a321c7.png" alt="test2用户权限"></p>
+<p>通过该test2用户登陆后，无法创建其他库，但是可以对test库进行操作:</p>
+<p><img src="/images/28c856ac-b861-467c-a091-ef1b2197d340.png" alt="test2操作test库"></p>
+<p>为什么会这么奇怪呢？如果没有任何权限，应该不能做任何操作才对，怎么能在test库下创建表呢？</p>
+<h3 id="问题排查"><a href="#问题排查" class="headerlink" title="问题排查"></a><strong>问题排查</strong></h3><p>查看mysql官方文档，可以知道：</p>
+<ul>
+<li>mysql系统库下存在7个关于权限相关的表，分别是：</li>
+</ul>
+<blockquote>
+<ul>
+<li>mysql.user表，保存用户相关的权限；当创建用户时，会在该表中插入用户相关记录，后续对创建的用户执行Grant授权时，会修改该表中对应用户的权限信息；</li>
+<li>mysql.db表，保存库的访问权限；当使用Grant限制某个用户访问指定的某些库时，会在该表中插入对应记录；</li>
+<li>mysql.host表，该表在MySQL 5.6.7及以后版本中不再被创建；</li>
+<li>mysql.tables_priv表，保存表级访问权限；当使用Grant限制某个用户访问特定库中的某个表时，会在该表中插入对应记录；</li>
+<li>mysql.columns_priv表，保存列级访问权限；mysql允许用户可以限制只访问某个表中的某些列，当对列的权限有限制时，会在该表中插入记录；</li>
+<li>mysql.procs_priv表，保存存储过程和存储函数相关权限；</li>
+<li>mysql.proxies_priv表，包括代理用户相关权限；</li>
+</ul>
+</blockquote>
+<p>我们查询mysql.db表，得到如下信息：</p>
+<p><img src="/images/588b33b2-c92f-4aec-bdd4-89aec3c75334.png" alt="mysql.db表"></p>
+<p>可以看到，对于test库以及’test_’开头的库，User字段为空，意味着所有的用户都可以对其进操作（权限字段为Y的那些操作），包括那些没有权限的用户。</p>
+<ul>
+<li>可以看到默认情况下，初始化的mysql环境中mysql.db表默认包含的2行test数据库相关的配置，导致任意用户可以随意操作test或者test_开头的数据库</li>
+</ul>
+<p><img src="/images/c6b6cd00-aa3b-4bb6-8312-03e5cfc7f707.png" alt="mysql.db表"></p>
+<h3 id="深入问题"><a href="#深入问题" class="headerlink" title="深入问题"></a><strong>深入问题</strong></h3><p>由于mysql实例是新创建的，并且没有对test2用户执行过任何库级的grant，那么mysql.db中的这两条记录是什么时候insert的呢？</p>
+<p>带着这个问题，我们查看了mysql安装工具mysql_install_db，在该pl工具中，会先使用mysql_system_tables.sql文件创建所有系统表，然后使用mysql_system_tables_data.sql文件初始化系统表数据。</p>
+<p><img src="/images/dddceb4f-d9c1-44d9-8e34-a36d134bdbf2.png" alt="变量定义"></p>
+<p><img src="/images/4d4f89fe-933d-4472-8ea2-47095887e013.png" alt="创建系统表"></p>
+<p>既然这样，查看mysql_system_tables_data.sql文件可以清楚看到对mysql.db表的初始化数据，如下：</p>
+<p><img src="/images/cef9f648-e32b-47eb-933b-5d7ecbacc9d6.png" alt="初始化系统表"></p>
+<p>至此，test库权限问题的原因已经找到。</p>
+<h3 id="后记"><a href="#后记" class="headerlink" title="后记"></a><strong>后记</strong></h3><p>还有两个遗留问题：</p>
+<ul>
+<li><p>一直以来，MySQL为什么对test库及test_开头的库的权限如此’开放’呢？</p>
+</li>
+<li><p>到了MySQL 5.7版本，官方把默认的test库直接干掉了，是不是由于test库引发了某些安全性问题才这么做的呢？</p>
+</li>
+</ul>
+<p>不管怎样，鉴于此，在使用MySQL时，还是需要注意：</p>
+<ul>
+<li>正式环境千万别使用test数据库或者创建test_开头的数据库来存储业务数据；</li>
+<li>对用户的权限进行测试、验证的时候，千万别去test数据库，这可能误导你；</li>
+<li>如果想彻底避免以上问题，可以将mysql.db中test相关的数据delete掉；</li>
+</ul>
+<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/system-database.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/system-database.html</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html</a></li>
+<li><a href="http://blog.itpub.net/27000195/viewspace-2119967/" target="_blank" rel="noopener">http://blog.itpub.net/27000195/viewspace-2119967/</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
       </tags>
   </entry>
   <entry>
@@ -902,73 +969,6 @@
         <tag>linux</tag>
         <tag>cpu</tag>
         <tag>load</tag>
-      </tags>
-  </entry>
-  <entry>
-    <title>MySQL中test库默认权限问题</title>
-    <url>/2017/12/26/test-database-privileges/</url>
-    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近在测试MySQL用户权限相关的事情，发现用户在无任何权限的情况下，是可以随意操作test库的。在此记录一下该问题及其原因。</p>
-<a id="more"></a>
-
-<h3 id="问题描述"><a href="#问题描述" class="headerlink" title="问题描述"></a><strong>问题描述</strong></h3><p>安装一个MySQL版本为5.6的新实例，创建了一个test2的用户。用户在创建后，默认是没有任何权限的，如下图：</p>
-<p><img src="/images/2717a7d9-8b1e-4df0-952a-038cb6a321c7.png" alt="test2用户权限"></p>
-<p>通过该test2用户登陆后，无法创建其他库，但是可以对test库进行操作:</p>
-<p><img src="/images/28c856ac-b861-467c-a091-ef1b2197d340.png" alt="test2操作test库"></p>
-<p>为什么会这么奇怪呢？如果没有任何权限，应该不能做任何操作才对，怎么能在test库下创建表呢？</p>
-<h3 id="问题排查"><a href="#问题排查" class="headerlink" title="问题排查"></a><strong>问题排查</strong></h3><p>查看mysql官方文档，可以知道：</p>
-<ul>
-<li>mysql系统库下存在7个关于权限相关的表，分别是：</li>
-</ul>
-<blockquote>
-<ul>
-<li>mysql.user表，保存用户相关的权限；当创建用户时，会在该表中插入用户相关记录，后续对创建的用户执行Grant授权时，会修改该表中对应用户的权限信息；</li>
-<li>mysql.db表，保存库的访问权限；当使用Grant限制某个用户访问指定的某些库时，会在该表中插入对应记录；</li>
-<li>mysql.host表，该表在MySQL 5.6.7及以后版本中不再被创建；</li>
-<li>mysql.tables_priv表，保存表级访问权限；当使用Grant限制某个用户访问特定库中的某个表时，会在该表中插入对应记录；</li>
-<li>mysql.columns_priv表，保存列级访问权限；mysql允许用户可以限制只访问某个表中的某些列，当对列的权限有限制时，会在该表中插入记录；</li>
-<li>mysql.procs_priv表，保存存储过程和存储函数相关权限；</li>
-<li>mysql.proxies_priv表，包括代理用户相关权限；</li>
-</ul>
-</blockquote>
-<p>我们查询mysql.db表，得到如下信息：</p>
-<p><img src="/images/588b33b2-c92f-4aec-bdd4-89aec3c75334.png" alt="mysql.db表"></p>
-<p>可以看到，对于test库以及’test_’开头的库，User字段为空，意味着所有的用户都可以对其进操作（权限字段为Y的那些操作），包括那些没有权限的用户。</p>
-<ul>
-<li>可以看到默认情况下，初始化的mysql环境中mysql.db表默认包含的2行test数据库相关的配置，导致任意用户可以随意操作test或者test_开头的数据库</li>
-</ul>
-<p><img src="/images/c6b6cd00-aa3b-4bb6-8312-03e5cfc7f707.png" alt="mysql.db表"></p>
-<h3 id="深入问题"><a href="#深入问题" class="headerlink" title="深入问题"></a><strong>深入问题</strong></h3><p>由于mysql实例是新创建的，并且没有对test2用户执行过任何库级的grant，那么mysql.db中的这两条记录是什么时候insert的呢？</p>
-<p>带着这个问题，我们查看了mysql安装工具mysql_install_db，在该pl工具中，会先使用mysql_system_tables.sql文件创建所有系统表，然后使用mysql_system_tables_data.sql文件初始化系统表数据。</p>
-<p><img src="/images/dddceb4f-d9c1-44d9-8e34-a36d134bdbf2.png" alt="变量定义"></p>
-<p><img src="/images/4d4f89fe-933d-4472-8ea2-47095887e013.png" alt="创建系统表"></p>
-<p>既然这样，查看mysql_system_tables_data.sql文件可以清楚看到对mysql.db表的初始化数据，如下：</p>
-<p><img src="/images/cef9f648-e32b-47eb-933b-5d7ecbacc9d6.png" alt="初始化系统表"></p>
-<p>至此，test库权限问题的原因已经找到。</p>
-<h3 id="后记"><a href="#后记" class="headerlink" title="后记"></a><strong>后记</strong></h3><p>还有两个遗留问题：</p>
-<ul>
-<li><p>一直以来，MySQL为什么对test库及test_开头的库的权限如此’开放’呢？</p>
-</li>
-<li><p>到了MySQL 5.7版本，官方把默认的test库直接干掉了，是不是由于test库引发了某些安全性问题才这么做的呢？</p>
-</li>
-</ul>
-<p>不管怎样，鉴于此，在使用MySQL时，还是需要注意：</p>
-<ul>
-<li>正式环境千万别使用test数据库或者创建test_开头的数据库来存储业务数据；</li>
-<li>对用户的权限进行测试、验证的时候，千万别去test数据库，这可能误导你；</li>
-<li>如果想彻底避免以上问题，可以将mysql.db中test相关的数据delete掉；</li>
-</ul>
-<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/system-database.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/system-database.html</a></li>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html</a></li>
-<li><a href="http://blog.itpub.net/27000195/viewspace-2119967/" target="_blank" rel="noopener">http://blog.itpub.net/27000195/viewspace-2119967/</a></li>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html</a></li>
-</ul>
-]]></content>
-      <categories>
-        <category>mysql</category>
-      </categories>
-      <tags>
-        <tag>mysql</tag>
       </tags>
   </entry>
 </search>
