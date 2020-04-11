@@ -33,7 +33,7 @@
 <meta property="og:image" content="http://www.pollilog.cn/images/mysql-57-show-master-status.jpeg">
 <meta property="og:image" content="http://www.pollilog.cn/images/mysql-57-global-executed-gtids.jpeg">
 <meta property="og:image" content="http://www.pollilog.cn/images/mysql-57-get-executed-gtids.png">
-<meta property="og:updated_time" content="2020-04-11T16:33:43.912Z">
+<meta property="og:updated_time" content="2020-04-11T16:37:50.264Z">
 <meta name="twitter:card" content="summary">
 <meta name="twitter:title" content="MySQL5.6和5.7版本中GTID的不同">
 <meta name="twitter:description" content="前言这是一篇旧文，之前做项目时遇到的问题，通过查阅相关资料和代码整理而来。本文不会介绍GTID的用法及配置，相关资料网上有一大堆，可自行查阅，主要是为了说明MySQL的GTID在5.6和5.7两个大版本之间的差异，这方面的介绍除了官方文档中有一些介绍外，其他资料到还不多。希望可以让你对GTID的了解更深入一些。">
@@ -280,7 +280,7 @@
         <h2 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h2><p>这是一篇旧文，之前做项目时遇到的问题，通过查阅相关资料和代码整理而来。本文不会介绍GTID的用法及配置，相关资料网上有一大堆，可自行查阅，主要是为了说明MySQL的GTID在5.6和5.7两个大版本之间的差异，这方面的介绍除了官方文档中有一些介绍外，其他资料到还不多。希望可以让你对GTID的了解更深入一些。</p>
 <a id="more"></a>
 
-<h2 id="MySQL5-6和5-7中GTID的差异"><a href="#MySQL5-6和5-7中GTID的差异" class="headerlink" title="MySQL5.6和5.7中GTID的差异"></a>MySQL5.6和5.7中GTID的差异</h2><h3 id="配置要求不同"><a href="#配置要求不同" class="headerlink" title="配置要求不同"></a>配置要求不同</h3><p>开启GTID复制时，一般涉及这4个配置：</p>
+<h2 id="两个版本的GTID差异"><a href="#两个版本的GTID差异" class="headerlink" title="两个版本的GTID差异"></a>两个版本的GTID差异</h2><h3 id="配置要求不同"><a href="#配置要求不同" class="headerlink" title="配置要求不同"></a>配置要求不同</h3><p>开启GTID复制时，一般涉及这4个配置：</p>
 <blockquote>
 <ul>
 <li>gtid_mode=ON</li>
@@ -459,7 +459,7 @@
 
       <!--noindex-->
       <div class="post-toc-wrap sidebar-panel">
-          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-2"><a class="nav-link" href="#前言"><span class="nav-number">1.</span> <span class="nav-text">前言</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#MySQL5-6和5-7中GTID的差异"><span class="nav-number">2.</span> <span class="nav-text">MySQL5.6和5.7中GTID的差异</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#配置要求不同"><span class="nav-number">2.1.</span> <span class="nav-text">配置要求不同</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#GTID保存逻辑不同"><span class="nav-number">2.2.</span> <span class="nav-text">GTID保存逻辑不同</span></a></li></ol></li><li class="nav-item nav-level-2"><a class="nav-link" href="#总结"><span class="nav-number">3.</span> <span class="nav-text">总结</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#参考"><span class="nav-number">4.</span> <span class="nav-text">参考</span></a></li></ol></div>
+          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-2"><a class="nav-link" href="#前言"><span class="nav-number">1.</span> <span class="nav-text">前言</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#两个版本的GTID差异"><span class="nav-number">2.</span> <span class="nav-text">两个版本的GTID差异</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#配置要求不同"><span class="nav-number">2.1.</span> <span class="nav-text">配置要求不同</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#GTID保存逻辑不同"><span class="nav-number">2.2.</span> <span class="nav-text">GTID保存逻辑不同</span></a></li></ol></li><li class="nav-item nav-level-2"><a class="nav-link" href="#总结"><span class="nav-number">3.</span> <span class="nav-text">总结</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#参考"><span class="nav-number">4.</span> <span class="nav-text">参考</span></a></li></ol></div>
       </div>
       <!--/noindex-->
 

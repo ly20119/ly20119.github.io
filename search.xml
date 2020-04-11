@@ -248,71 +248,90 @@
       </tags>
   </entry>
   <entry>
+    <title>MySQL5.6和5.7版本中GTID的不同</title>
+    <url>/2020/04/11/gtid-differs-between-mysql-56-57/</url>
+    <content><![CDATA[<h2 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h2><p>这是一篇旧文，之前做项目时遇到的问题，通过查阅相关资料和代码整理而来。本文不会介绍GTID的用法及配置，相关资料网上有一大堆，可自行查阅，主要是为了说明MySQL的GTID在5.6和5.7两个大版本之间的差异，这方面的介绍除了官方文档中有一些介绍外，其他资料到还不多。希望可以让你对GTID的了解更深入一些。</p>
+<a id="more"></a>
+
+<h2 id="两个版本的GTID差异"><a href="#两个版本的GTID差异" class="headerlink" title="两个版本的GTID差异"></a>两个版本的GTID差异</h2><h3 id="配置要求不同"><a href="#配置要求不同" class="headerlink" title="配置要求不同"></a>配置要求不同</h3><p>开启GTID复制时，一般涉及这4个配置：</p>
+<blockquote>
+<ul>
+<li>gtid_mode=ON</li>
+<li>log_bin=ON</li>
+<li>log-slave-updates=ON</li>
+<li>enforce-gtid-consistency</li>
+</ul>
+</blockquote>
+<p>它们的作用分别表示：是否开启GTID模式、是否开启Binlog文件、slave日志中是否记录SQL线程的更新、是否拒绝可能导致GTID不一致的SQL语句；</p>
+<p>在mysql5.6中，如果要使用GTID复制，这四个配置必须全都要启用；但是在mysql5.7中，在使用GTID时，<code>log_bin</code>和<code>log-slave-updates</code>两个配置不再是强制开启的（Why？）。不过一般情况下，为了做高可用切换，我们还是会默认开启<code>log_bin</code>和<code>log-slave-updates</code>。</p>
+<h3 id="GTID保存逻辑不同"><a href="#GTID保存逻辑不同" class="headerlink" title="GTID保存逻辑不同"></a>GTID保存逻辑不同</h3><p>使用mysql时，假设我们开启了GTID，那么我们查看GTID的方式可以为：</p>
+<ul>
+<li><code>show master status</code></li>
+<li><code>show slave status</code></li>
+<li><code>select @@global.gtid_executed</code></li>
+</ul>
+<p>在mysql 5.6中，<code>Executed_Gtid_Set</code>与<code>global.gtid_executed</code>的取值是相同的，他们都来自于binlog中GTID的集合。具体过程是这样的：</p>
+<ol>
+<li>每次启动的时候：<ul>
+<li>首先，从最新binlog中读取<code>Previous_gtids_log_event</code>的gtid列表，加入logged_gtids集合中；</li>
+<li>其次，从最新binlog中读取所有的<code>Gtid_log_event</code>的gtid，加入到logged_gtids集合中；</li>
+</ul>
+</li>
+<li>启动之后，后续每个执行的事务所生成的gtid也都会更新到logged_gtids集合中;</li>
+</ol>
+<p>总结就是：在MySQL5.6中，<code>Executed_Gtid_Set</code>是在mysqld启动时从最新的binlog中加载的。现在回头来看开启GTID的时候为什么要开启log_bin参数？因为<code>Executed_Gtid_Set</code>是保存在binlog中的，启动的实话需要加载GTID信息，所以必须要开启binlog。</p>
+<p>这里再对照mysql源码看下上面的说明。</p>
+<ul>
+<li><code>show master status</code></li>
+</ul>
+<p><img src="/images/mysql-56-show-master-status.jpeg" alt="5.6 show master status"></p>
+<ul>
+<li><code>select @@global.gtid_executed</code></li>
+</ul>
+<p><img src="/images/mysql-56-global-gtid-executed.jpeg" alt="5.6 select @@global.gtid_executed"></p>
+<p>因此，如果启动的时候binlog被清空了，则Executed_Gtid_Set显示为空，后续执行的事务会从事务编号为1的GTID重新开始。读者可自行验证。</p>
+<p>下面我们再看下在mysql 5.7中的行为。<br>首先，5.7中引入了一个新的系统表<code>mysql.gtid_executed</code>, 用于保存已经执行的事务的GTID集合。具体的逻辑为：</p>
+<ol>
+<li>当binlog未开启时，每个执行事务的GTID都会保存在该表中。此时，会启用一个新的GTID压缩线程对该表进行定时压缩，压缩的频率可以通过参数<code>gtid_executed_compression_period</code>来控制（该参数意思是每执行<code>gtid_executed_compression_period</code>个事务执行一次压缩）；当使用主从复制时，这种情况只能用于slave上，master上是必须要开启binlog的；</li>
+<li>当binlog开启时，每当binlog轮转或者server正常shutdown时，上一个binlog中的所有GTID集合（包括<code>Previous_gtids_log_event</code>）会记录到该表中；但是，当server非正常关闭时，当前binlog中的GTID并未保存到<code>mysql.gtid_executed</code>表中，在server重启执行recovery时会将这部分GTID保存到<code>mysql.gtid_executed</code>表中；同时注意，开启binlog时，不会启用binlog压缩，参数<code>gtid_executed_compression_period</code>不起作用；</li>
+</ol>
+<p>其次，<code>Executed_Gtid_Set</code>变量的值以及<code>global.gtid_executed</code>的值，不再从binlog中读取，而是从系统表mysql.gtid_executed中获取，见下图mysql5.7.18源码实现：</p>
+<ul>
+<li><code>show master status</code></li>
+</ul>
+<p><img src="/images/mysql-57-show-master-status.jpeg" alt="5.7 show master status"></p>
+<ul>
+<li><code>select @@global.gtid_executed</code></li>
+</ul>
+<p><img src="/images/mysql-57-global-executed-gtids.jpeg" alt="5.7 select @@global.gtid_executed"></p>
+<ul>
+<li>函数<code>get_executed_gtids()</code>，注意函数注释</li>
+</ul>
+<p><img src="/images/mysql-57-get-executed-gtids.png" alt="5.7 get_executed_gtids"></p>
+<p>因此，在mysql 5.7中，开启GTID不再强制要求开启binlog，只有当需要做主从复制中的master时，才必须开启binlog（为了保证高可用时的主从切换，还是建议同时开启主从上的binlog）。但是，如果非正常shutdown后，在启动的时候binlog被清空了，5.7中的<code>Executed_Gtid_Set</code>不会显示为空，而是最后一个binlog的<code>Previous_gtids</code>，相比5.6版本，这缺失的不是全部的GTID，而是最后一个binlog中的<code>gtid_event</code>。</p>
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>总体而言，相比5.6版本，5.7版本对GTID的改进，减少了GTID的使用限制，同时也加强了GTID信息的持久化。不知道在8.0版本中，在GTID方面又有哪些变化，还没来得及看。</p>
+<h2 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h2><ul>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-gtids-howto.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-gtids-howto.html</a></li>
+<li><a href="https://www.percona.com/sites/default/files/presentations/mysql_56_GTID_in_a_nutshell.pdf" target="_blank" rel="noopener">https://www.percona.com/sites/default/files/presentations/mysql_56_GTID_in_a_nutshell.pdf</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_gtid_executed" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_gtid_executed</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-howto.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-howto.html</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-concepts.html#replication-gtids-gtid-executed-table" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-concepts.html#replication-gtids-gtid-executed-table</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
+        <tag>gtid</tag>
+      </tags>
+  </entry>
+  <entry>
     <title>你好，世界</title>
     <url>/2017/03/11/hello-world/</url>
     <content><![CDATA[<p>我的第一篇文章</p>
 ]]></content>
-  </entry>
-  <entry>
-    <title>如何使用系统调用mount挂载NFS</title>
-    <url>/2018/11/02/mount-nfs-use-system-call/</url>
-    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近一直在使用NFS做一些开发和测试，功能开发完毕后，需要对NFS的可用性做一些监控，没有使用crontab+shell脚本的方式，总觉得这么做的都是临时方案，不成体系，所以就基于现有的框架写了一个轻量级的服务。具体的监控事项包括NFS的挂载和卸载、基本的读写、剩余空间等，发现异常后给出告警提示。基本的功能比较简单，但是在开发的时候却遇到一个问题：<br>在C++代码中，如何使用系统调用mount()来挂载NFS？</p>
-<a id="more"></a>
-
-<h3 id="讨论"><a href="#讨论" class="headerlink" title="讨论"></a><strong>讨论</strong></h3><p>我们都知道，在Linux命令行下，使用系统工具mount可以很简单的完成这个事情：</p>
-<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">mount -t nfs 10.10.123.101:/vbumjko7 -o "vers=3,nolock,proto=tcp"</span><br></pre></td></tr></table></figure>
-
-<p>但是在C++代码中怎么搞呢？方法大致如下：</p>
-<ul>
-<li>调用system执行mount命令</li>
-<li>调用popen执行mount命令</li>
-<li>调用系统API函数mount()</li>
-</ul>
-<h3 id="探索"><a href="#探索" class="headerlink" title="探索"></a><strong>探索</strong></h3><p>system和popen的方式都是起子进程执行shell命令来完成挂载任务，这样本质上跟直接使用shell命令没有区别，且实现上比shell更复杂（你还要编译、调试），所以不会采用。<br>使用mount API怎么做呢？man了一下mount，原型如下：</p>
-<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">mount</span><span class="params">(<span class="keyword">const</span> <span class="keyword">char</span> *source, <span class="keyword">const</span> <span class="keyword">char</span> *target,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">char</span> *filesystemtype, <span class="keyword">unsigned</span> <span class="keyword">long</span> mountflags,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">void</span> *data)</span></span>;</span><br></pre></td></tr></table></figure>
-
-<p>说明：</p>
-<blockquote>
-<ul>
-<li>source – 表示需要挂载的设备或者目录；</li>
-<li>target – 表示目标挂载点（一个目录，比如/mnt/test_nfs）；</li>
-<li>filesystemtype – 表示需要挂载的文件系统类型，比如”ext2”, “ext3”, “jfs”, “xfs”, “nfs”等，我们这里是”nfs”；</li>
-<li>mountflags – 表示用来控制mount行为的标识掩码；</li>
-<li>data – 依据挂载的文件系统类型，指定相关的挂载选项；</li>
-</ul>
-</blockquote>
-<p>看上去很简单就可以完成，比如我们这样：</p>
-<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<p>编译运行，意想不到的输出：</p>
-<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">ERROR: mount failed: Invalid Argument</span><br></pre></td></tr></table></figure>
-
-<p>参数都是根据手册填的，哪里出错了呢？</p>
-<h3 id="解决"><a href="#解决" class="headerlink" title="解决"></a><strong>解决</strong></h3><p>谷歌找一下，发现在stackoverflow上有一个一样的问题：<a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">NFS mount System Call in linux</a><br>答主的意思是：</p>
-<blockquote>
-<p>首先，对于没有看到任何关于使用mount调用来挂载nfs的手册表示诧异。然后，深入到mount工具的源码实现，发现在挂载nfs时，解析对应的nfs挂载选项中有个Opt_addr，该字段对应挂载选项中的addr选项。为了使mount函数正常运行，应该在挂载选项中添加addr=x.x.x.x；</p>
-</blockquote>
-<p>原因很明显了，我们缺少了must选项addr，修改代码，添加该选项后，代码为：</p>
-<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<p>编译运行，啊哈，挂载成功！<br>至此问题解决。</p>
-<h3 id="附录"><a href="#附录" class="headerlink" title="附录"></a><strong>附录</strong></h3><p>附上测试代码如下：</p>
-<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/mount.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;errno.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;string.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* src  = <span class="string">"10.10.123.101:/vbumjko7"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* trgt = <span class="string">"/mnt/test_nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* type = <span class="string">"nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">unsigned</span> <span class="keyword">long</span> mntflags = <span class="number">0</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* opts = <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">int</span> result = mount(src, trgt, type, mntflags, opts);</span><br><span class="line"></span><br><span class="line">   <span class="keyword">if</span> (result == <span class="number">0</span>)</span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Mount created at %s...\n"</span>, trgt);</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Press &lt;return&gt; to unmount the volume: "</span>);</span><br><span class="line">      getchar();</span><br><span class="line">      umount(trgt);</span><br><span class="line">   &#125;</span><br><span class="line">   <span class="keyword">else</span></span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Error : Failed to mount %s\n"</span></span><br><span class="line">             <span class="string">"Reason: %s [%d]\n"</span>,</span><br><span class="line">             src, strerror(errno), errno);</span><br><span class="line">      <span class="keyword">return</span> <span class="number">-1</span>;</span><br><span class="line">   &#125;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
-
-<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
-<li><a href="http://man7.org/linux/man-pages/man2/mount.2.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man2/mount.2.html</a></li>
-<li><a href="http://man7.org/linux/man-pages/man5/nfs.5.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man5/nfs.5.html</a></li>
-<li><a href="https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/" target="_blank" rel="noopener">https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/</a></li>
-<li><a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux</a></li>
-</ul>
-]]></content>
-      <categories>
-        <category>底层技术</category>
-      </categories>
-      <tags>
-        <tag>Linux</tag>
-        <tag>NFS</tag>
-      </tags>
   </entry>
   <entry>
     <title>『译』InnoDB中的数据组织</title>
@@ -498,6 +517,67 @@
       </tags>
   </entry>
   <entry>
+    <title>如何使用系统调用mount挂载NFS</title>
+    <url>/2018/11/02/mount-nfs-use-system-call/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近一直在使用NFS做一些开发和测试，功能开发完毕后，需要对NFS的可用性做一些监控，没有使用crontab+shell脚本的方式，总觉得这么做的都是临时方案，不成体系，所以就基于现有的框架写了一个轻量级的服务。具体的监控事项包括NFS的挂载和卸载、基本的读写、剩余空间等，发现异常后给出告警提示。基本的功能比较简单，但是在开发的时候却遇到一个问题：<br>在C++代码中，如何使用系统调用mount()来挂载NFS？</p>
+<a id="more"></a>
+
+<h3 id="讨论"><a href="#讨论" class="headerlink" title="讨论"></a><strong>讨论</strong></h3><p>我们都知道，在Linux命令行下，使用系统工具mount可以很简单的完成这个事情：</p>
+<figure class="highlight shell"><table><tr><td class="code"><pre><span class="line">mount -t nfs 10.10.123.101:/vbumjko7 -o "vers=3,nolock,proto=tcp"</span><br></pre></td></tr></table></figure>
+
+<p>但是在C++代码中怎么搞呢？方法大致如下：</p>
+<ul>
+<li>调用system执行mount命令</li>
+<li>调用popen执行mount命令</li>
+<li>调用系统API函数mount()</li>
+</ul>
+<h3 id="探索"><a href="#探索" class="headerlink" title="探索"></a><strong>探索</strong></h3><p>system和popen的方式都是起子进程执行shell命令来完成挂载任务，这样本质上跟直接使用shell命令没有区别，且实现上比shell更复杂（你还要编译、调试），所以不会采用。<br>使用mount API怎么做呢？man了一下mount，原型如下：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">mount</span><span class="params">(<span class="keyword">const</span> <span class="keyword">char</span> *source, <span class="keyword">const</span> <span class="keyword">char</span> *target,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">char</span> *filesystemtype, <span class="keyword">unsigned</span> <span class="keyword">long</span> mountflags,</span></span></span><br><span class="line"><span class="function"><span class="params">                 <span class="keyword">const</span> <span class="keyword">void</span> *data)</span></span>;</span><br></pre></td></tr></table></figure>
+
+<p>说明：</p>
+<blockquote>
+<ul>
+<li>source – 表示需要挂载的设备或者目录；</li>
+<li>target – 表示目标挂载点（一个目录，比如/mnt/test_nfs）；</li>
+<li>filesystemtype – 表示需要挂载的文件系统类型，比如”ext2”, “ext3”, “jfs”, “xfs”, “nfs”等，我们这里是”nfs”；</li>
+<li>mountflags – 表示用来控制mount行为的标识掩码；</li>
+<li>data – 依据挂载的文件系统类型，指定相关的挂载选项；</li>
+</ul>
+</blockquote>
+<p>看上去很简单就可以完成，比如我们这样：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>编译运行，意想不到的输出：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">ERROR: mount failed: Invalid Argument</span><br></pre></td></tr></table></figure>
+
+<p>参数都是根据手册填的，哪里出错了呢？</p>
+<h3 id="解决"><a href="#解决" class="headerlink" title="解决"></a><strong>解决</strong></h3><p>谷歌找一下，发现在stackoverflow上有一个一样的问题：<a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">NFS mount System Call in linux</a><br>答主的意思是：</p>
+<blockquote>
+<p>首先，对于没有看到任何关于使用mount调用来挂载nfs的手册表示诧异。然后，深入到mount工具的源码实现，发现在挂载nfs时，解析对应的nfs挂载选项中有个Opt_addr，该字段对应挂载选项中的addr选项。为了使mount函数正常运行，应该在挂载选项中添加addr=x.x.x.x；</p>
+</blockquote>
+<p>原因很明显了，我们缺少了must选项addr，修改代码，添加该选项后，代码为：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="keyword">if</span> (mount(<span class="string">"10.10.123.101:/vbumjko7"</span>, <span class="string">"/mnt/test_nfs"</span>, <span class="string">"nfs"</span>, <span class="number">0</span>, <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>) == <span class="number">-1</span>)</span><br><span class="line">&#123;</span><br><span class="line">     <span class="built_in">printf</span>(<span class="string">"ERROR: mount failed: %s \n"</span>, strerror(errno));</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<p>编译运行，啊哈，挂载成功！<br>至此问题解决。</p>
+<h3 id="附录"><a href="#附录" class="headerlink" title="附录"></a><strong>附录</strong></h3><p>附上测试代码如下：</p>
+<figure class="highlight cpp"><table><tr><td class="code"><pre><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;sys/mount.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;errno.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;stdio.h&gt;</span></span></span><br><span class="line"><span class="meta">#<span class="meta-keyword">include</span> <span class="meta-string">&lt;string.h&gt;</span></span></span><br><span class="line"></span><br><span class="line"><span class="function"><span class="keyword">int</span> <span class="title">main</span><span class="params">()</span></span></span><br><span class="line"><span class="function"></span>&#123;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* src  = <span class="string">"10.10.123.101:/vbumjko7"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* trgt = <span class="string">"/mnt/test_nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* type = <span class="string">"nfs"</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">unsigned</span> <span class="keyword">long</span> mntflags = <span class="number">0</span>;</span><br><span class="line">   <span class="keyword">const</span> <span class="keyword">char</span>* opts = <span class="string">"vers=3,nolock,proto=tcp,addr=10.10.123.101"</span>;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">int</span> result = mount(src, trgt, type, mntflags, opts);</span><br><span class="line"></span><br><span class="line">   <span class="keyword">if</span> (result == <span class="number">0</span>)</span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Mount created at %s...\n"</span>, trgt);</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Press &lt;return&gt; to unmount the volume: "</span>);</span><br><span class="line">      getchar();</span><br><span class="line">      umount(trgt);</span><br><span class="line">   &#125;</span><br><span class="line">   <span class="keyword">else</span></span><br><span class="line">   &#123;</span><br><span class="line">      <span class="built_in">printf</span>(<span class="string">"Error : Failed to mount %s\n"</span></span><br><span class="line">             <span class="string">"Reason: %s [%d]\n"</span>,</span><br><span class="line">             src, strerror(errno), errno);</span><br><span class="line">      <span class="keyword">return</span> <span class="number">-1</span>;</span><br><span class="line">   &#125;</span><br><span class="line"></span><br><span class="line">   <span class="keyword">return</span> <span class="number">0</span>;</span><br><span class="line">&#125;</span><br></pre></td></tr></table></figure>
+
+<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
+<li><a href="http://man7.org/linux/man-pages/man2/mount.2.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man2/mount.2.html</a></li>
+<li><a href="http://man7.org/linux/man-pages/man5/nfs.5.html" target="_blank" rel="noopener">http://man7.org/linux/man-pages/man5/nfs.5.html</a></li>
+<li><a href="https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/" target="_blank" rel="noopener">https://www.linuxquestions.org/questions/programming-9/how-to-use-mount-function-from-c-920210/</a></li>
+<li><a href="https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux" target="_blank" rel="noopener">https://stackoverflow.com/questions/28350912/nfs-mount-system-call-in-linux</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>底层技术</category>
+      </categories>
+      <tags>
+        <tag>Linux</tag>
+        <tag>NFS</tag>
+      </tags>
+  </entry>
+  <entry>
     <title>MySQL实战笔记--理解行锁</title>
     <url>/2019/04/04/mysql-row-lock/</url>
     <content><![CDATA[<h2 id="知识点"><a href="#知识点" class="headerlink" title="知识点"></a>知识点</h2><ul>
@@ -567,86 +647,6 @@
         <tag>mysql</tag>
         <tag>innodb</tag>
         <tag>lock</tag>
-      </tags>
-  </entry>
-  <entry>
-    <title>MySQL5.6和5.7版本中GTID的不同</title>
-    <url>/2020/04/11/gtid-differs-between-mysql-56-57/</url>
-    <content><![CDATA[<h2 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h2><p>这是一篇旧文，之前做项目时遇到的问题，通过查阅相关资料和代码整理而来。本文不会介绍GTID的用法及配置，相关资料网上有一大堆，可自行查阅，主要是为了说明MySQL的GTID在5.6和5.7两个大版本之间的差异，这方面的介绍除了官方文档中有一些介绍外，其他资料到还不多。希望可以让你对GTID的了解更深入一些。</p>
-<a id="more"></a>
-
-<h2 id="MySQL5-6和5-7中GTID的差异"><a href="#MySQL5-6和5-7中GTID的差异" class="headerlink" title="MySQL5.6和5.7中GTID的差异"></a>MySQL5.6和5.7中GTID的差异</h2><h3 id="配置要求不同"><a href="#配置要求不同" class="headerlink" title="配置要求不同"></a>配置要求不同</h3><p>开启GTID复制时，一般涉及这4个配置：</p>
-<blockquote>
-<ul>
-<li>gtid_mode=ON</li>
-<li>log_bin=ON</li>
-<li>log-slave-updates=ON</li>
-<li>enforce-gtid-consistency</li>
-</ul>
-</blockquote>
-<p>它们的作用分别表示：是否开启GTID模式、是否开启Binlog文件、slave日志中是否记录SQL线程的更新、是否拒绝可能导致GTID不一致的SQL语句；</p>
-<p>在mysql5.6中，如果要使用GTID复制，这四个配置必须全都要启用；但是在mysql5.7中，在使用GTID时，<code>log_bin</code>和<code>log-slave-updates</code>两个配置不再是强制开启的（Why？）。不过一般情况下，为了做高可用切换，我们还是会默认开启<code>log_bin</code>和<code>log-slave-updates</code>。</p>
-<h3 id="GTID保存逻辑不同"><a href="#GTID保存逻辑不同" class="headerlink" title="GTID保存逻辑不同"></a>GTID保存逻辑不同</h3><p>使用mysql时，假设我们开启了GTID，那么我们查看GTID的方式可以为：</p>
-<ul>
-<li><code>show master status</code></li>
-<li><code>show slave status</code></li>
-<li><code>select @@global.gtid_executed</code></li>
-</ul>
-<p>在mysql 5.6中，<code>Executed_Gtid_Set</code>与<code>global.gtid_executed</code>的取值是相同的，他们都来自于binlog中GTID的集合。具体过程是这样的：</p>
-<ol>
-<li>每次启动的时候：<ul>
-<li>首先，从最新binlog中读取<code>Previous_gtids_log_event</code>的gtid列表，加入logged_gtids集合中；</li>
-<li>其次，从最新binlog中读取所有的<code>Gtid_log_event</code>的gtid，加入到logged_gtids集合中；</li>
-</ul>
-</li>
-<li>启动之后，后续每个执行的事务所生成的gtid也都会更新到logged_gtids集合中;</li>
-</ol>
-<p>总结就是：在MySQL5.6中，<code>Executed_Gtid_Set</code>是在mysqld启动时从最新的binlog中加载的。现在回头来看开启GTID的时候为什么要开启log_bin参数？因为<code>Executed_Gtid_Set</code>是保存在binlog中的，启动的实话需要加载GTID信息，所以必须要开启binlog。</p>
-<p>这里再对照mysql源码看下上面的说明。</p>
-<ul>
-<li><code>show master status</code></li>
-</ul>
-<p><img src="/images/mysql-56-show-master-status.jpeg" alt="5.6 show master status"></p>
-<ul>
-<li><code>select @@global.gtid_executed</code></li>
-</ul>
-<p><img src="/images/mysql-56-global-gtid-executed.jpeg" alt="5.6 select @@global.gtid_executed"></p>
-<p>因此，如果启动的时候binlog被清空了，则Executed_Gtid_Set显示为空，后续执行的事务会从事务编号为1的GTID重新开始。读者可自行验证。</p>
-<p>下面我们再看下在mysql 5.7中的行为。<br>首先，5.7中引入了一个新的系统表<code>mysql.gtid_executed</code>, 用于保存已经执行的事务的GTID集合。具体的逻辑为：</p>
-<ol>
-<li>当binlog未开启时，每个执行事务的GTID都会保存在该表中。此时，会启用一个新的GTID压缩线程对该表进行定时压缩，压缩的频率可以通过参数<code>gtid_executed_compression_period</code>来控制（该参数意思是每执行<code>gtid_executed_compression_period</code>个事务执行一次压缩）；当使用主从复制时，这种情况只能用于slave上，master上是必须要开启binlog的；</li>
-<li>当binlog开启时，每当binlog轮转或者server正常shutdown时，上一个binlog中的所有GTID集合（包括<code>Previous_gtids_log_event</code>）会记录到该表中；但是，当server非正常关闭时，当前binlog中的GTID并未保存到<code>mysql.gtid_executed</code>表中，在server重启执行recovery时会将这部分GTID保存到<code>mysql.gtid_executed</code>表中；同时注意，开启binlog时，不会启用binlog压缩，参数<code>gtid_executed_compression_period</code>不起作用；</li>
-</ol>
-<p>其次，<code>Executed_Gtid_Set</code>变量的值以及<code>global.gtid_executed</code>的值，不再从binlog中读取，而是从系统表mysql.gtid_executed中获取，见下图mysql5.7.18源码实现：</p>
-<ul>
-<li><code>show master status</code></li>
-</ul>
-<p><img src="/images/mysql-57-show-master-status.jpeg" alt="5.7 show master status"></p>
-<ul>
-<li><code>select @@global.gtid_executed</code></li>
-</ul>
-<p><img src="/images/mysql-57-global-executed-gtids.jpeg" alt="5.7 select @@global.gtid_executed"></p>
-<ul>
-<li>函数<code>get_executed_gtids()</code>，注意函数注释</li>
-</ul>
-<p><img src="/images/mysql-57-get-executed-gtids.png" alt="5.7 get_executed_gtids"></p>
-<p>因此，在mysql 5.7中，开启GTID不再强制要求开启binlog，只有当需要做主从复制中的master时，才必须开启binlog（为了保证高可用时的主从切换，还是建议同时开启主从上的binlog）。但是，如果非正常shutdown后，在启动的时候binlog被清空了，5.7中的<code>Executed_Gtid_Set</code>不会显示为空，而是最后一个binlog的<code>Previous_gtids</code>，相比5.6版本，这缺失的不是全部的GTID，而是最后一个binlog中的<code>gtid_event</code>。</p>
-<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>总体而言，相比5.6版本，5.7版本对GTID的改进，减少了GTID的使用限制，同时也加强了GTID信息的持久化。不知道在8.0版本中，在GTID方面又有哪些变化，还没来得及看。</p>
-<h2 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h2><ul>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-gtids-howto.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-gtids-howto.html</a></li>
-<li><a href="https://www.percona.com/sites/default/files/presentations/mysql_56_GTID_in_a_nutshell.pdf" target="_blank" rel="noopener">https://www.percona.com/sites/default/files/presentations/mysql_56_GTID_in_a_nutshell.pdf</a></li>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency</a></li>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_gtid_executed" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_gtid_executed</a></li>
-<li><a href="https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-howto.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-howto.html</a></li>
-<li><a href="https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-concepts.html#replication-gtids-gtid-executed-table" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-concepts.html#replication-gtids-gtid-executed-table</a></li>
-</ul>
-]]></content>
-      <categories>
-        <category>mysql</category>
-      </categories>
-      <tags>
-        <tag>mysql</tag>
-        <tag>gtid</tag>
       </tags>
   </entry>
   <entry>
@@ -736,6 +736,73 @@
         <tag>mysql</tag>
         <tag>Gtid</tag>
         <tag>LogEvent</tag>
+      </tags>
+  </entry>
+  <entry>
+    <title>MySQL中test库默认权限问题</title>
+    <url>/2017/12/26/test-database-privileges/</url>
+    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近在测试MySQL用户权限相关的事情，发现用户在无任何权限的情况下，是可以随意操作test库的。在此记录一下该问题及其原因。</p>
+<a id="more"></a>
+
+<h3 id="问题描述"><a href="#问题描述" class="headerlink" title="问题描述"></a><strong>问题描述</strong></h3><p>安装一个MySQL版本为5.6的新实例，创建了一个test2的用户。用户在创建后，默认是没有任何权限的，如下图：</p>
+<p><img src="/images/2717a7d9-8b1e-4df0-952a-038cb6a321c7.png" alt="test2用户权限"></p>
+<p>通过该test2用户登陆后，无法创建其他库，但是可以对test库进行操作:</p>
+<p><img src="/images/28c856ac-b861-467c-a091-ef1b2197d340.png" alt="test2操作test库"></p>
+<p>为什么会这么奇怪呢？如果没有任何权限，应该不能做任何操作才对，怎么能在test库下创建表呢？</p>
+<h3 id="问题排查"><a href="#问题排查" class="headerlink" title="问题排查"></a><strong>问题排查</strong></h3><p>查看mysql官方文档，可以知道：</p>
+<ul>
+<li>mysql系统库下存在7个关于权限相关的表，分别是：</li>
+</ul>
+<blockquote>
+<ul>
+<li>mysql.user表，保存用户相关的权限；当创建用户时，会在该表中插入用户相关记录，后续对创建的用户执行Grant授权时，会修改该表中对应用户的权限信息；</li>
+<li>mysql.db表，保存库的访问权限；当使用Grant限制某个用户访问指定的某些库时，会在该表中插入对应记录；</li>
+<li>mysql.host表，该表在MySQL 5.6.7及以后版本中不再被创建；</li>
+<li>mysql.tables_priv表，保存表级访问权限；当使用Grant限制某个用户访问特定库中的某个表时，会在该表中插入对应记录；</li>
+<li>mysql.columns_priv表，保存列级访问权限；mysql允许用户可以限制只访问某个表中的某些列，当对列的权限有限制时，会在该表中插入记录；</li>
+<li>mysql.procs_priv表，保存存储过程和存储函数相关权限；</li>
+<li>mysql.proxies_priv表，包括代理用户相关权限；</li>
+</ul>
+</blockquote>
+<p>我们查询mysql.db表，得到如下信息：</p>
+<p><img src="/images/588b33b2-c92f-4aec-bdd4-89aec3c75334.png" alt="mysql.db表"></p>
+<p>可以看到，对于test库以及’test_’开头的库，User字段为空，意味着所有的用户都可以对其进操作（权限字段为Y的那些操作），包括那些没有权限的用户。</p>
+<ul>
+<li>可以看到默认情况下，初始化的mysql环境中mysql.db表默认包含的2行test数据库相关的配置，导致任意用户可以随意操作test或者test_开头的数据库</li>
+</ul>
+<p><img src="/images/c6b6cd00-aa3b-4bb6-8312-03e5cfc7f707.png" alt="mysql.db表"></p>
+<h3 id="深入问题"><a href="#深入问题" class="headerlink" title="深入问题"></a><strong>深入问题</strong></h3><p>由于mysql实例是新创建的，并且没有对test2用户执行过任何库级的grant，那么mysql.db中的这两条记录是什么时候insert的呢？</p>
+<p>带着这个问题，我们查看了mysql安装工具mysql_install_db，在该pl工具中，会先使用mysql_system_tables.sql文件创建所有系统表，然后使用mysql_system_tables_data.sql文件初始化系统表数据。</p>
+<p><img src="/images/dddceb4f-d9c1-44d9-8e34-a36d134bdbf2.png" alt="变量定义"></p>
+<p><img src="/images/4d4f89fe-933d-4472-8ea2-47095887e013.png" alt="创建系统表"></p>
+<p>既然这样，查看mysql_system_tables_data.sql文件可以清楚看到对mysql.db表的初始化数据，如下：</p>
+<p><img src="/images/cef9f648-e32b-47eb-933b-5d7ecbacc9d6.png" alt="初始化系统表"></p>
+<p>至此，test库权限问题的原因已经找到。</p>
+<h3 id="后记"><a href="#后记" class="headerlink" title="后记"></a><strong>后记</strong></h3><p>还有两个遗留问题：</p>
+<ul>
+<li><p>一直以来，MySQL为什么对test库及test_开头的库的权限如此’开放’呢？</p>
+</li>
+<li><p>到了MySQL 5.7版本，官方把默认的test库直接干掉了，是不是由于test库引发了某些安全性问题才这么做的呢？</p>
+</li>
+</ul>
+<p>不管怎样，鉴于此，在使用MySQL时，还是需要注意：</p>
+<ul>
+<li>正式环境千万别使用test数据库或者创建test_开头的数据库来存储业务数据；</li>
+<li>对用户的权限进行测试、验证的时候，千万别去test数据库，这可能误导你；</li>
+<li>如果想彻底避免以上问题，可以将mysql.db中test相关的数据delete掉；</li>
+</ul>
+<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/system-database.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/system-database.html</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html</a></li>
+<li><a href="http://blog.itpub.net/27000195/viewspace-2119967/" target="_blank" rel="noopener">http://blog.itpub.net/27000195/viewspace-2119967/</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html</a></li>
+</ul>
+]]></content>
+      <categories>
+        <category>mysql</category>
+      </categories>
+      <tags>
+        <tag>mysql</tag>
       </tags>
   </entry>
   <entry>
@@ -856,73 +923,6 @@
       <tags>
         <tag>mysql</tag>
         <tag>InnoDB</tag>
-      </tags>
-  </entry>
-  <entry>
-    <title>MySQL中test库默认权限问题</title>
-    <url>/2017/12/26/test-database-privileges/</url>
-    <content><![CDATA[<h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>最近在测试MySQL用户权限相关的事情，发现用户在无任何权限的情况下，是可以随意操作test库的。在此记录一下该问题及其原因。</p>
-<a id="more"></a>
-
-<h3 id="问题描述"><a href="#问题描述" class="headerlink" title="问题描述"></a><strong>问题描述</strong></h3><p>安装一个MySQL版本为5.6的新实例，创建了一个test2的用户。用户在创建后，默认是没有任何权限的，如下图：</p>
-<p><img src="/images/2717a7d9-8b1e-4df0-952a-038cb6a321c7.png" alt="test2用户权限"></p>
-<p>通过该test2用户登陆后，无法创建其他库，但是可以对test库进行操作:</p>
-<p><img src="/images/28c856ac-b861-467c-a091-ef1b2197d340.png" alt="test2操作test库"></p>
-<p>为什么会这么奇怪呢？如果没有任何权限，应该不能做任何操作才对，怎么能在test库下创建表呢？</p>
-<h3 id="问题排查"><a href="#问题排查" class="headerlink" title="问题排查"></a><strong>问题排查</strong></h3><p>查看mysql官方文档，可以知道：</p>
-<ul>
-<li>mysql系统库下存在7个关于权限相关的表，分别是：</li>
-</ul>
-<blockquote>
-<ul>
-<li>mysql.user表，保存用户相关的权限；当创建用户时，会在该表中插入用户相关记录，后续对创建的用户执行Grant授权时，会修改该表中对应用户的权限信息；</li>
-<li>mysql.db表，保存库的访问权限；当使用Grant限制某个用户访问指定的某些库时，会在该表中插入对应记录；</li>
-<li>mysql.host表，该表在MySQL 5.6.7及以后版本中不再被创建；</li>
-<li>mysql.tables_priv表，保存表级访问权限；当使用Grant限制某个用户访问特定库中的某个表时，会在该表中插入对应记录；</li>
-<li>mysql.columns_priv表，保存列级访问权限；mysql允许用户可以限制只访问某个表中的某些列，当对列的权限有限制时，会在该表中插入记录；</li>
-<li>mysql.procs_priv表，保存存储过程和存储函数相关权限；</li>
-<li>mysql.proxies_priv表，包括代理用户相关权限；</li>
-</ul>
-</blockquote>
-<p>我们查询mysql.db表，得到如下信息：</p>
-<p><img src="/images/588b33b2-c92f-4aec-bdd4-89aec3c75334.png" alt="mysql.db表"></p>
-<p>可以看到，对于test库以及’test_’开头的库，User字段为空，意味着所有的用户都可以对其进操作（权限字段为Y的那些操作），包括那些没有权限的用户。</p>
-<ul>
-<li>可以看到默认情况下，初始化的mysql环境中mysql.db表默认包含的2行test数据库相关的配置，导致任意用户可以随意操作test或者test_开头的数据库</li>
-</ul>
-<p><img src="/images/c6b6cd00-aa3b-4bb6-8312-03e5cfc7f707.png" alt="mysql.db表"></p>
-<h3 id="深入问题"><a href="#深入问题" class="headerlink" title="深入问题"></a><strong>深入问题</strong></h3><p>由于mysql实例是新创建的，并且没有对test2用户执行过任何库级的grant，那么mysql.db中的这两条记录是什么时候insert的呢？</p>
-<p>带着这个问题，我们查看了mysql安装工具mysql_install_db，在该pl工具中，会先使用mysql_system_tables.sql文件创建所有系统表，然后使用mysql_system_tables_data.sql文件初始化系统表数据。</p>
-<p><img src="/images/dddceb4f-d9c1-44d9-8e34-a36d134bdbf2.png" alt="变量定义"></p>
-<p><img src="/images/4d4f89fe-933d-4472-8ea2-47095887e013.png" alt="创建系统表"></p>
-<p>既然这样，查看mysql_system_tables_data.sql文件可以清楚看到对mysql.db表的初始化数据，如下：</p>
-<p><img src="/images/cef9f648-e32b-47eb-933b-5d7ecbacc9d6.png" alt="初始化系统表"></p>
-<p>至此，test库权限问题的原因已经找到。</p>
-<h3 id="后记"><a href="#后记" class="headerlink" title="后记"></a><strong>后记</strong></h3><p>还有两个遗留问题：</p>
-<ul>
-<li><p>一直以来，MySQL为什么对test库及test_开头的库的权限如此’开放’呢？</p>
-</li>
-<li><p>到了MySQL 5.7版本，官方把默认的test库直接干掉了，是不是由于test库引发了某些安全性问题才这么做的呢？</p>
-</li>
-</ul>
-<p>不管怎样，鉴于此，在使用MySQL时，还是需要注意：</p>
-<ul>
-<li>正式环境千万别使用test数据库或者创建test_开头的数据库来存储业务数据；</li>
-<li>对用户的权限进行测试、验证的时候，千万别去test数据库，这可能误导你；</li>
-<li>如果想彻底避免以上问题，可以将mysql.db中test相关的数据delete掉；</li>
-</ul>
-<h3 id="参考链接"><a href="#参考链接" class="headerlink" title="参考链接"></a><strong>参考链接</strong></h3><ul>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/system-database.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/system-database.html</a></li>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/grant-tables.html</a></li>
-<li><a href="http://blog.itpub.net/27000195/viewspace-2119967/" target="_blank" rel="noopener">http://blog.itpub.net/27000195/viewspace-2119967/</a></li>
-<li><a href="https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/default-privileges.html</a></li>
-</ul>
-]]></content>
-      <categories>
-        <category>mysql</category>
-      </categories>
-      <tags>
-        <tag>mysql</tag>
       </tags>
   </entry>
   <entry>
