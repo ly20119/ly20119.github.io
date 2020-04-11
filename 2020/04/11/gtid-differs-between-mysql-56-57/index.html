@@ -20,20 +20,26 @@
     var CONFIG = {"hostname":"www.pollilog.cn","root":"/","scheme":"Gemini","version":"7.8.0","exturl":false,"sidebar":{"position":"right","display":"post","padding":18,"offset":12,"onmobile":false},"copycode":{"enable":true,"show_result":false,"style":null},"back2top":{"enable":true,"sidebar":false,"scrollpercent":false},"bookmark":{"enable":false,"color":"#222","save":"auto"},"fancybox":false,"mediumzoom":false,"lazyload":false,"pangu":false,"comments":{"style":"tabs","active":null,"storage":true,"lazyload":false,"nav":null},"algolia":{"hits":{"per_page":10},"labels":{"input_placeholder":"Search for Posts","hits_empty":"We didn't find any results for the search: ${query}","hits_stats":"${hits} results found in ${time} ms"}},"localsearch":{"enable":true,"trigger":"auto","top_n_per_article":1,"unescape":false,"preload":false},"motion":{"enable":true,"async":false,"transition":{"post_block":"fadeIn","post_header":"slideDownIn","post_body":"slideDownIn","coll_header":"slideLeftIn","sidebar":"slideUpIn"}},"path":"search.xml"};
   </script>
 
-  <meta name="description" content="知识点 行锁是在引擎层实现的，不是所有的引擎都实现了行锁，比如MyISAM引擎就不支持行锁； 行锁相比表锁，锁粒度更小，所以并发性能更好，所以，对应对并发有要求的业务，推荐不要使用MyISAM引擎； 在InnoDB事务中，行锁是需要时才加上的，但并不是不需要了就立刻释放，只有在事务结束的时候才释放掉，这个过程叫两阶段锁协议；">
-<meta name="keywords" content="mysql,innodb,lock">
+  <meta name="description" content="前言这是一篇旧文，之前做项目时遇到的问题，通过查阅相关资料和代码整理而来。本文不会介绍GTID的用法及配置，相关资料网上有一大堆，可自行查阅，主要是为了说明MySQL的GTID在5.6和5.7两个大版本之间的差异，这方面的介绍除了官方文档中有一些介绍外，其他资料到还不多。希望可以让你对GTID的了解更深入一些。">
+<meta name="keywords" content="mysql,gtid">
 <meta property="og:type" content="article">
-<meta property="og:title" content="MySQL实战笔记--理解行锁">
-<meta property="og:url" content="http://www.pollilog.cn/2019/04/04/mysql-row-lock/index.html">
+<meta property="og:title" content="MySQL5.6和5.7版本中GTID的不同">
+<meta property="og:url" content="http://www.pollilog.cn/2020/04/11/gtid-differs-between-mysql-56-57/index.html">
 <meta property="og:site_name" content="Polli&#39;s Logs">
-<meta property="og:description" content="知识点 行锁是在引擎层实现的，不是所有的引擎都实现了行锁，比如MyISAM引擎就不支持行锁； 行锁相比表锁，锁粒度更小，所以并发性能更好，所以，对应对并发有要求的业务，推荐不要使用MyISAM引擎； 在InnoDB事务中，行锁是需要时才加上的，但并不是不需要了就立刻释放，只有在事务结束的时候才释放掉，这个过程叫两阶段锁协议；">
+<meta property="og:description" content="前言这是一篇旧文，之前做项目时遇到的问题，通过查阅相关资料和代码整理而来。本文不会介绍GTID的用法及配置，相关资料网上有一大堆，可自行查阅，主要是为了说明MySQL的GTID在5.6和5.7两个大版本之间的差异，这方面的介绍除了官方文档中有一些介绍外，其他资料到还不多。希望可以让你对GTID的了解更深入一些。">
 <meta property="og:locale" content="zh-CN">
-<meta property="og:updated_time" content="2020-04-05T04:07:01.384Z">
+<meta property="og:image" content="http://www.pollilog.cn/images/mysql-56-show-master-status.jpeg">
+<meta property="og:image" content="http://www.pollilog.cn/images/mysql-56-global-gtid-executed.jpeg">
+<meta property="og:image" content="http://www.pollilog.cn/images/mysql-57-show-master-status.jpeg">
+<meta property="og:image" content="http://www.pollilog.cn/images/mysql-57-global-executed-gtids.jpeg">
+<meta property="og:image" content="http://www.pollilog.cn/images/mysql-57-get-executed-gtids.png">
+<meta property="og:updated_time" content="2020-04-11T16:33:43.912Z">
 <meta name="twitter:card" content="summary">
-<meta name="twitter:title" content="MySQL实战笔记--理解行锁">
-<meta name="twitter:description" content="知识点 行锁是在引擎层实现的，不是所有的引擎都实现了行锁，比如MyISAM引擎就不支持行锁； 行锁相比表锁，锁粒度更小，所以并发性能更好，所以，对应对并发有要求的业务，推荐不要使用MyISAM引擎； 在InnoDB事务中，行锁是需要时才加上的，但并不是不需要了就立刻释放，只有在事务结束的时候才释放掉，这个过程叫两阶段锁协议；">
+<meta name="twitter:title" content="MySQL5.6和5.7版本中GTID的不同">
+<meta name="twitter:description" content="前言这是一篇旧文，之前做项目时遇到的问题，通过查阅相关资料和代码整理而来。本文不会介绍GTID的用法及配置，相关资料网上有一大堆，可自行查阅，主要是为了说明MySQL的GTID在5.6和5.7两个大版本之间的差异，这方面的介绍除了官方文档中有一些介绍外，其他资料到还不多。希望可以让你对GTID的了解更深入一些。">
+<meta name="twitter:image" content="http://www.pollilog.cn/images/mysql-56-show-master-status.jpeg">
 
-<link rel="canonical" href="http://www.pollilog.cn/2019/04/04/mysql-row-lock/">
+<link rel="canonical" href="http://www.pollilog.cn/2020/04/11/gtid-differs-between-mysql-56-57/">
 
 
 <script id="page-configurations">
@@ -46,7 +52,7 @@
   };
 </script>
 
-  <title>MySQL实战笔记--理解行锁 | Polli's Logs</title>
+  <title>MySQL5.6和5.7版本中GTID的不同 | Polli's Logs</title>
   
 
 
@@ -204,7 +210,7 @@
   
   
   <article itemscope itemtype="http://schema.org/Article" class="post-block" lang="zh-CN">
-    <link itemprop="mainEntityOfPage" href="http://www.pollilog.cn/2019/04/04/mysql-row-lock/">
+    <link itemprop="mainEntityOfPage" href="http://www.pollilog.cn/2020/04/11/gtid-differs-between-mysql-56-57/">
 
     <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
       <meta itemprop="image" content="/images/avatar.gif">
@@ -217,7 +223,7 @@
     </span>
       <header class="post-header">
         <h1 class="post-title" itemprop="name headline">
-          MySQL实战笔记--理解行锁
+          MySQL5.6和5.7版本中GTID的不同
         </h1>
 
         <div class="post-meta">
@@ -227,7 +233,7 @@
               </span>
               <span class="post-meta-item-text">发表于</span>
 
-              <time title="创建时间：2019-04-04 15:00:30" itemprop="dateCreated datePublished" datetime="2019-04-04T15:00:30+08:00">2019-04-04</time>
+              <time title="创建时间：2020-04-11 22:47:38" itemprop="dateCreated datePublished" datetime="2020-04-11T22:47:38+08:00">2020-04-11</time>
             </span>
             <span class="post-meta-item">
               <span class="post-meta-item-icon">
@@ -255,8 +261,8 @@
       </span>
       <span class="post-meta-item-text">评论数：</span>
     
-    <a title="valine" href="/2019/04/04/mysql-row-lock/#valine-comments" itemprop="discussionUrl">
-      <span class="post-comments-count valine-comment-count" data-xid="/2019/04/04/mysql-row-lock/" itemprop="commentCount"></span>
+    <a title="valine" href="/2020/04/11/gtid-differs-between-mysql-56-57/#valine-comments" itemprop="discussionUrl">
+      <span class="post-comments-count valine-comment-count" data-xid="/2020/04/11/gtid-differs-between-mysql-56-57/" itemprop="commentCount"></span>
     </a>
   </span>
   
@@ -271,64 +277,73 @@
     <div class="post-body" itemprop="articleBody">
 
       
-        <h2 id="知识点"><a href="#知识点" class="headerlink" title="知识点"></a>知识点</h2><ul>
-<li>行锁是在引擎层实现的，不是所有的引擎都实现了行锁，比如MyISAM引擎就不支持行锁；</li>
-<li>行锁相比表锁，锁粒度更小，所以并发性能更好，所以，对应对并发有要求的业务，推荐不要使用MyISAM引擎；</li>
-<li>在InnoDB事务中，行锁是需要时才加上的，但并不是不需要了就立刻释放，只有在事务结束的时候才释放掉，这个过程叫两阶段锁协议；</li>
-</ul>
+        <h2 id="前言"><a href="#前言" class="headerlink" title="前言"></a>前言</h2><p>这是一篇旧文，之前做项目时遇到的问题，通过查阅相关资料和代码整理而来。本文不会介绍GTID的用法及配置，相关资料网上有一大堆，可自行查阅，主要是为了说明MySQL的GTID在5.6和5.7两个大版本之间的差异，这方面的介绍除了官方文档中有一些介绍外，其他资料到还不多。希望可以让你对GTID的了解更深入一些。</p>
 <a id="more"></a>
 
+<h2 id="MySQL5-6和5-7中GTID的差异"><a href="#MySQL5-6和5-7中GTID的差异" class="headerlink" title="MySQL5.6和5.7中GTID的差异"></a>MySQL5.6和5.7中GTID的差异</h2><h3 id="配置要求不同"><a href="#配置要求不同" class="headerlink" title="配置要求不同"></a>配置要求不同</h3><p>开启GTID复制时，一般涉及这4个配置：</p>
+<blockquote>
 <ul>
-<li>建议：如果在一个事务中需要多个行锁，建议把最可能造成锁冲突，最可能影响并发度的锁尽量往后放；</li>
-<li>由于锁和并发的问题，存在死锁的可能性，InnoDB中采用两种方式处理死锁：innodb_lock_wait_timeout和innodb_deadlock_detect；</li>
-<li>innodb_lock_wait_timeout表示出现死锁时，等待一定时间后自动退出，并释放已经持有的所有锁，这样其他线程就可以抢到锁了，这个超时时间默认是50s；该值不能设置太小，会导致短时等待的锁被误伤；<strong>开启这种策略时，对业务是有损的</strong>；</li>
-<li>innodb_deadlock_detect表示是否开启死锁检测，为on时开启，默认为on，开启时，事务在执行前会发起死锁检测，发现死锁后，回滚掉锁链条中某个事物，使其他事务得以继续；死锁检测的时间复杂度是O(n)，所以开启的代价是占用过多的CPU，导致性能下降；</li>
-<li>从业务角度来看，降低死锁的几个思路：<ul>
-<li>如果确保业务不会出现死锁，可以把死锁检测关掉，带来的风险是，出现死锁时，需要等待超时后回滚，对业务有损；</li>
-<li>控制并发度，保证时间复杂度较低，风险是，单个应用的并发度较低，但是在应用很多的情况下，并发度依旧很高，没有根本解决死锁问题；</li>
-<li>逻辑上把热点行改成多行，降低死锁概率，但是需要业务实现额外的特殊处理逻辑，使得业务逻辑复杂化；</li>
+<li>gtid_mode=ON</li>
+<li>log_bin=ON</li>
+<li>log-slave-updates=ON</li>
+<li>enforce-gtid-consistency</li>
 </ul>
-</li>
-<li>如果有使用中间件，可以在中间件层实现并发控制；</li>
-<li>最终方案，修改MySQL内核代码，基本思路是，对同一行的更新进行排队；</li>
-</ul>
-<h2 id="案例分析"><a href="#案例分析" class="headerlink" title="案例分析"></a>案例分析</h2><ul>
-<li><p>问题：在备库上使用mysqldump –single-transaction做逻辑备份，如果同时在主库对一个小表做DDL，会有什么影响？</p>
-</li>
-<li><p>思路：深入理解mysqldump的备份过程</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br><span class="line">3</span><br><span class="line">4</span><br><span class="line">5</span><br><span class="line">6</span><br><span class="line">7</span><br><span class="line">8</span><br><span class="line">9</span><br><span class="line">10</span><br><span class="line">11</span><br><span class="line">12</span><br></pre></td><td class="code"><pre><span class="line">Q1:SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;</span><br><span class="line">Q2:START TRANSACTION WITH CONSISTENT SNAPSHOT；</span><br><span class="line">/* other tables */</span><br><span class="line">Q3:SAVEPOINT sp;</span><br><span class="line">/* 时刻 1 */</span><br><span class="line">Q4:show create table `t1`;</span><br><span class="line">/* 时刻 2 */</span><br><span class="line">Q5:SELECT * FROM `t1`;</span><br><span class="line">/* 时刻 3 */</span><br><span class="line">Q6:ROLLBACK TO SAVEPOINT sp;</span><br><span class="line">/* 时刻 4 */</span><br><span class="line">/* other tables */</span><br></pre></td></tr></table></figure>
-</li>
-<li><p>说明</p>
+</blockquote>
+<p>它们的作用分别表示：是否开启GTID模式、是否开启Binlog文件、slave日志中是否记录SQL线程的更新、是否拒绝可能导致GTID不一致的SQL语句；</p>
+<p>在mysql5.6中，如果要使用GTID复制，这四个配置必须全都要启用；但是在mysql5.7中，在使用GTID时，<code>log_bin</code>和<code>log-slave-updates</code>两个配置不再是强制开启的（Why？）。不过一般情况下，为了做高可用切换，我们还是会默认开启<code>log_bin</code>和<code>log-slave-updates</code>。</p>
+<h3 id="GTID保存逻辑不同"><a href="#GTID保存逻辑不同" class="headerlink" title="GTID保存逻辑不同"></a>GTID保存逻辑不同</h3><p>使用mysql时，假设我们开启了GTID，那么我们查看GTID的方式可以为：</p>
 <ul>
-<li>为了得到所有表的一致性读，所以修改session隔离级别为RR；</li>
-<li>在启动事务时使用WITH CONSISTENT SNAPSHOT，可以保证语句执行完可以得到一个一致性视图；</li>
-<li>设置事务保存点（作用是在事务内部分割成逻辑上的几个部分，事务失败时可将事务状态恢复到该保存点）；</li>
-<li>获取表结构；</li>
-<li>获取表中数据；</li>
-<li>将事务回滚到保存点的状态，主要是为了释放当前表上的MDL锁；</li>
+<li><code>show master status</code></li>
+<li><code>show slave status</code></li>
+<li><code>select @@global.gtid_executed</code></li>
+</ul>
+<p>在mysql 5.6中，<code>Executed_Gtid_Set</code>与<code>global.gtid_executed</code>的取值是相同的，他们都来自于binlog中GTID的集合。具体过程是这样的：</p>
+<ol>
+<li>每次启动的时候：<ul>
+<li>首先，从最新binlog中读取<code>Previous_gtids_log_event</code>的gtid列表，加入logged_gtids集合中；</li>
+<li>其次，从最新binlog中读取所有的<code>Gtid_log_event</code>的gtid，加入到logged_gtids集合中；</li>
 </ul>
 </li>
-<li><p>解答</p>
+<li>启动之后，后续每个执行的事务所生成的gtid也都会更新到logged_gtids集合中;</li>
+</ol>
+<p>总结就是：在MySQL5.6中，<code>Executed_Gtid_Set</code>是在mysqld启动时从最新的binlog中加载的。现在回头来看开启GTID的时候为什么要开启log_bin参数？因为<code>Executed_Gtid_Set</code>是保存在binlog中的，启动的实话需要加载GTID信息，所以必须要开启binlog。</p>
+<p>这里再对照mysql源码看下上面的说明。</p>
 <ul>
-<li>如果DDL在时刻1执行，则无影响，此时备份的是修改后的表结构和数据；</li>
-<li>如果DDL在时刻2执行，则mysqldump会在Q5报错退出；（schema错误）</li>
-<li>如果DDL在时刻3执行，则由于mysqldump已经拿到该表的MDL锁，则DDL需要等待，整个SQL线程阻塞，会导致主从差距变大；SQL线程会一直等到Q6执行完才能继续；</li>
-<li>如果DDL在时刻4执行，则无影响，此时备份的是修改前的表结构和数据；</li>
+<li><code>show master status</code></li>
 </ul>
-</li>
-<li><p>其他思考</p>
+<p><img src="/images/mysql-56-show-master-status.jpeg" alt="5.6 show master status"></p>
 <ul>
-<li><p>实际上，在mysqldump备份时，在Q1之前，还有两条语句需要执行：</p>
-<figure class="highlight plain"><table><tr><td class="gutter"><pre><span class="line">1</span><br><span class="line">2</span><br></pre></td><td class="code"><pre><span class="line">FLUSH TABLES;</span><br><span class="line">FLUSH TABLES WITH READ LOCK;</span><br></pre></td></tr></table></figure>
-</li>
-<li><p><code>flush tables</code>的作用是：1.关闭打开的表，失效缓存，同时刷脏；2.等待所有事务的提交，以保证第二条语句尽快执行完；</p>
-</li>
-<li><p>如果DDL在<code>flush tables</code>之前执行，则<code>flush tables</code>会等待DDL完成后才执行，备份数据为修改后的表结构和数据；</p>
-</li>
-<li><p>如果DDL在两个语句之间，则同样，FTWRL会被阻塞，等到DDL完成后才执行，备份数据为修改后的表结构和数据；</p>
-</li>
+<li><code>select @@global.gtid_executed</code></li>
 </ul>
-</li>
+<p><img src="/images/mysql-56-global-gtid-executed.jpeg" alt="5.6 select @@global.gtid_executed"></p>
+<p>因此，如果启动的时候binlog被清空了，则Executed_Gtid_Set显示为空，后续执行的事务会从事务编号为1的GTID重新开始。读者可自行验证。</p>
+<p>下面我们再看下在mysql 5.7中的行为。<br>首先，5.7中引入了一个新的系统表<code>mysql.gtid_executed</code>, 用于保存已经执行的事务的GTID集合。具体的逻辑为：</p>
+<ol>
+<li>当binlog未开启时，每个执行事务的GTID都会保存在该表中。此时，会启用一个新的GTID压缩线程对该表进行定时压缩，压缩的频率可以通过参数<code>gtid_executed_compression_period</code>来控制（该参数意思是每执行<code>gtid_executed_compression_period</code>个事务执行一次压缩）；当使用主从复制时，这种情况只能用于slave上，master上是必须要开启binlog的；</li>
+<li>当binlog开启时，每当binlog轮转或者server正常shutdown时，上一个binlog中的所有GTID集合（包括<code>Previous_gtids_log_event</code>）会记录到该表中；但是，当server非正常关闭时，当前binlog中的GTID并未保存到<code>mysql.gtid_executed</code>表中，在server重启执行recovery时会将这部分GTID保存到<code>mysql.gtid_executed</code>表中；同时注意，开启binlog时，不会启用binlog压缩，参数<code>gtid_executed_compression_period</code>不起作用；</li>
+</ol>
+<p>其次，<code>Executed_Gtid_Set</code>变量的值以及<code>global.gtid_executed</code>的值，不再从binlog中读取，而是从系统表mysql.gtid_executed中获取，见下图mysql5.7.18源码实现：</p>
+<ul>
+<li><code>show master status</code></li>
+</ul>
+<p><img src="/images/mysql-57-show-master-status.jpeg" alt="5.7 show master status"></p>
+<ul>
+<li><code>select @@global.gtid_executed</code></li>
+</ul>
+<p><img src="/images/mysql-57-global-executed-gtids.jpeg" alt="5.7 select @@global.gtid_executed"></p>
+<ul>
+<li>函数<code>get_executed_gtids()</code>，注意函数注释</li>
+</ul>
+<p><img src="/images/mysql-57-get-executed-gtids.png" alt="5.7 get_executed_gtids"></p>
+<p>因此，在mysql 5.7中，开启GTID不再强制要求开启binlog，只有当需要做主从复制中的master时，才必须开启binlog（为了保证高可用时的主从切换，还是建议同时开启主从上的binlog）。但是，如果非正常shutdown后，在启动的时候binlog被清空了，5.7中的<code>Executed_Gtid_Set</code>不会显示为空，而是最后一个binlog的<code>Previous_gtids</code>，相比5.6版本，这缺失的不是全部的GTID，而是最后一个binlog中的<code>gtid_event</code>。</p>
+<h2 id="总结"><a href="#总结" class="headerlink" title="总结"></a>总结</h2><p>总体而言，相比5.6版本，5.7版本对GTID的改进，减少了GTID的使用限制，同时也加强了GTID信息的持久化。不知道在8.0版本中，在GTID方面又有哪些变化，还没来得及看。</p>
+<h2 id="参考"><a href="#参考" class="headerlink" title="参考"></a>参考</h2><ul>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-gtids-howto.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-gtids-howto.html</a></li>
+<li><a href="https://www.percona.com/sites/default/files/presentations/mysql_56_GTID_in_a_nutshell.pdf" target="_blank" rel="noopener">https://www.percona.com/sites/default/files/presentations/mysql_56_GTID_in_a_nutshell.pdf</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_enforce_gtid_consistency</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_gtid_executed" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.6/en/replication-options-gtids.html#sysvar_gtid_executed</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-howto.html" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-howto.html</a></li>
+<li><a href="https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-concepts.html#replication-gtids-gtid-executed-table" target="_blank" rel="noopener">https://dev.mysql.com/doc/refman/5.7/en/replication-gtids-concepts.html#replication-gtids-gtid-executed-table</a></li>
 </ul>
 
     </div>
@@ -360,7 +375,7 @@
   </li>
   <li class="post-copyright-link">
     <strong>本文链接：</strong>
-    <a href="http://www.pollilog.cn/2019/04/04/mysql-row-lock/" title="MySQL实战笔记--理解行锁">http://www.pollilog.cn/2019/04/04/mysql-row-lock/</a>
+    <a href="http://www.pollilog.cn/2020/04/11/gtid-differs-between-mysql-56-57/" title="MySQL5.6和5.7版本中GTID的不同">http://www.pollilog.cn/2020/04/11/gtid-differs-between-mysql-56-57/</a>
   </li>
   <li class="post-copyright-license">
     <strong>版权声明： </strong>本博客所有文章除特别声明外，均采用 <a href="https://creativecommons.org/licenses/by-nc-sa/4.0/" rel="noopener" target="_blank"><i class="fab fa-fw fa-creative-commons"></i>BY-NC-SA</a> 许可协议。转载请注明出处！
@@ -372,8 +387,7 @@
       <footer class="post-footer">
           <div class="post-tags">
               <a href="/tags/mysql/" rel="tag"># mysql</a>
-              <a href="/tags/innodb/" rel="tag"># innodb</a>
-              <a href="/tags/lock/" rel="tag"># lock</a>
+              <a href="/tags/gtid/" rel="tag"># gtid</a>
           </div>
 
         
@@ -382,13 +396,10 @@
         
     <div class="post-nav">
       <div class="post-nav-item">
-    <a href="/2019/04/04/understand-linux-avg-load/" rel="prev" title="Linux性能优化笔记--理解平均负载">
-      <i class="fa fa-chevron-left"></i> Linux性能优化笔记--理解平均负载
+    <a href="/2019/04/29/deep-learning-rr-iso-level/" rel="prev" title="MySQL实战笔记--深入理解RR隔离级别">
+      <i class="fa fa-chevron-left"></i> MySQL实战笔记--深入理解RR隔离级别
     </a></div>
-      <div class="post-nav-item">
-    <a href="/2019/04/29/deep-learning-rr-iso-level/" rel="next" title="MySQL实战笔记--深入理解RR隔离级别">
-      MySQL实战笔记--深入理解RR隔离级别 <i class="fa fa-chevron-right"></i>
-    </a></div>
+      <div class="post-nav-item"></div>
     </div>
       </footer>
     
@@ -448,7 +459,7 @@
 
       <!--noindex-->
       <div class="post-toc-wrap sidebar-panel">
-          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-2"><a class="nav-link" href="#知识点"><span class="nav-number">1.</span> <span class="nav-text">知识点</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#案例分析"><span class="nav-number">2.</span> <span class="nav-text">案例分析</span></a></li></ol></div>
+          <div class="post-toc motion-element"><ol class="nav"><li class="nav-item nav-level-2"><a class="nav-link" href="#前言"><span class="nav-number">1.</span> <span class="nav-text">前言</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#MySQL5-6和5-7中GTID的差异"><span class="nav-number">2.</span> <span class="nav-text">MySQL5.6和5.7中GTID的差异</span></a><ol class="nav-child"><li class="nav-item nav-level-3"><a class="nav-link" href="#配置要求不同"><span class="nav-number">2.1.</span> <span class="nav-text">配置要求不同</span></a></li><li class="nav-item nav-level-3"><a class="nav-link" href="#GTID保存逻辑不同"><span class="nav-number">2.2.</span> <span class="nav-text">GTID保存逻辑不同</span></a></li></ol></li><li class="nav-item nav-level-2"><a class="nav-link" href="#总结"><span class="nav-number">3.</span> <span class="nav-text">总结</span></a></li><li class="nav-item nav-level-2"><a class="nav-link" href="#参考"><span class="nav-number">4.</span> <span class="nav-text">参考</span></a></li></ol></div>
       </div>
       <!--/noindex-->
 
