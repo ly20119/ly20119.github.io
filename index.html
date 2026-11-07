@@ -198,6 +198,105 @@
   
   
   <article itemscope itemtype="http://schema.org/Article" class="post-block" lang="zh-CN">
+    <link itemprop="mainEntityOfPage" href="http://www.pollilog.cn/2026/11/07/google-colossus-overview/">
+
+    <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
+      <meta itemprop="image" content="/images/avatar.gif">
+      <meta itemprop="name" content="polli">
+      <meta itemprop="description" content="">
+    </span>
+
+    <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
+      <meta itemprop="name" content="Polli's Logs">
+    </span>
+      <header class="post-header">
+        <h2 class="post-title" itemprop="name headline">
+          
+            <a href="/2026/11/07/google-colossus-overview/" class="post-title-link" itemprop="url">Colossus：Google 第二代集群级文件系统的设计与演进</a>
+        </h2>
+
+        <div class="post-meta">
+            <span class="post-meta-item">
+              <span class="post-meta-item-icon">
+                <i class="far fa-calendar"></i>
+              </span>
+              <span class="post-meta-item-text">发表于</span>
+
+              <time title="创建时间：2026-11-07 18:45:33" itemprop="dateCreated datePublished" datetime="2026-11-07T18:45:33+08:00">2026-11-07</time>
+            </span>
+            <span class="post-meta-item">
+              <span class="post-meta-item-icon">
+                <i class="far fa-folder"></i>
+              </span>
+              <span class="post-meta-item-text">分类于</span>
+                <span itemprop="about" itemscope itemtype="http://schema.org/Thing">
+                  <a href="/categories/底层技术/" itemprop="url" rel="index"><span itemprop="name">底层技术</span></a>
+                </span>
+            </span>
+
+          
+  
+  <span class="post-meta-item">
+    
+      <span class="post-meta-item-icon">
+        <i class="far fa-comment"></i>
+      </span>
+      <span class="post-meta-item-text">评论数：</span>
+    
+    <a title="valine" href="/2026/11/07/google-colossus-overview/#valine-comments" itemprop="discussionUrl">
+      <span class="post-comments-count valine-comment-count" data-xid="/2026/11/07/google-colossus-overview/" itemprop="commentCount"></span>
+    </a>
+  </span>
+  
+  
+
+        </div>
+      </header>
+
+    
+    
+    
+    <div class="post-body" itemprop="articleBody">
+
+      
+          <blockquote>
+<p>基于公开资料的系统性综述（学习笔记）</p>
+</blockquote>
+<h2 id="摘要"><a href="#摘要" class="headerlink" title="摘要"></a>摘要</h2><p>Colossus 是 Google 的集群级（cluster-level）分布式文件系统，接替 2003 年在 SOSP 发表的 Google File System（GFS）。GFS 的元数据全部放在单台 Master 的内存里，大约在 5000 万文件、10 PB 量级就遇到扩展上限；面对 Gmail 这类延迟敏感业务，它分钟级的故障切换也无法接受。Colossus 主要做了四件事：</p>
+<ol>
+<li><strong>元数据分布化</strong>：把文件系统元数据存进 Bigtable，由可水平扩展的 Curator 服务管理，单集群规模比最大的 GFS 集群扩大 100 倍以上；</li>
+<li><strong>简化编程模型</strong>：采用 append-only、单写者（single-writer）语义，去掉 GFS 中代价高、语义模糊的并发 RecordAppend 和快照等特性；</li>
+<li><strong>客户端驱动的冗余</strong>：复制与 Reed-Solomon / LRC 纠删码都在客户端库里完成，数据在客户端与 D 文件服务器之间直接传输；</li>
+<li><strong>以 TCO 为目标的放置</strong>：Custodian 做后台均衡和重建，借助 L4 分布式 SSD 缓存和机器学习驱动的准入/放置策略，把 SSD 与 HDD 混合使用。</li>
+</ol>
+<p>据 2025 年的公开数据，多个 Colossus 文件系统容量达到数 EB，其中两个超过 10 EB；最大的文件系统读吞吐超过 50 TB/s、写吞吐超过 25 TB/s，最繁忙的单集群 IOPS 超过 6 亿。Colossus 支撑着 YouTube、Gmail、BigQuery、Spanner、Bigtable 和 Cloud Storage 等几乎所有 Google 产品。本文还整理了 GFS 迁移到 Colossus 的 “Moonshot” 工程（2010–2012），并把 Colossus 与 HDFS、Meta Tectonic 做了对比，最后列出公开资料尚未覆盖的开放问题。</p>
+<p><strong>关键词</strong>：分布式文件系统；元数据扩展；纠删码；存储分层；Flash 缓存；存储 TCO；Google 基础设施</p>
+          <!--noindex-->
+            <div class="post-button">
+              <a class="btn" href="/2026/11/07/google-colossus-overview/#more" rel="contents">
+                阅读全文 &raquo;
+              </a>
+            </div>
+          <!--/noindex-->
+        
+      
+    </div>
+
+    
+    
+    
+      <footer class="post-footer">
+        <div class="post-eof"></div>
+      </footer>
+  </article>
+  
+  
+  
+
+      
+  
+  
+  <article itemscope itemtype="http://schema.org/Article" class="post-block" lang="zh-CN">
     <link itemprop="mainEntityOfPage" href="http://www.pollilog.cn/2020/04/11/gtid-differs-between-mysql-56-57/">
 
     <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
@@ -997,94 +1096,6 @@
   
   
 
-      
-  
-  
-  <article itemscope itemtype="http://schema.org/Article" class="post-block" lang="zh-CN">
-    <link itemprop="mainEntityOfPage" href="http://www.pollilog.cn/2017/10/31/innodb-data-organization/">
-
-    <span hidden itemprop="author" itemscope itemtype="http://schema.org/Person">
-      <meta itemprop="image" content="/images/avatar.gif">
-      <meta itemprop="name" content="polli">
-      <meta itemprop="description" content="">
-    </span>
-
-    <span hidden itemprop="publisher" itemscope itemtype="http://schema.org/Organization">
-      <meta itemprop="name" content="Polli's Logs">
-    </span>
-      <header class="post-header">
-        <h2 class="post-title" itemprop="name headline">
-          
-            <a href="/2017/10/31/innodb-data-organization/" class="post-title-link" itemprop="url">『译』InnoDB中的数据组织</a>
-        </h2>
-
-        <div class="post-meta">
-            <span class="post-meta-item">
-              <span class="post-meta-item-icon">
-                <i class="far fa-calendar"></i>
-              </span>
-              <span class="post-meta-item-text">发表于</span>
-
-              <time title="创建时间：2017-10-31 11:49:17" itemprop="dateCreated datePublished" datetime="2017-10-31T11:49:17+08:00">2017-10-31</time>
-            </span>
-            <span class="post-meta-item">
-              <span class="post-meta-item-icon">
-                <i class="far fa-folder"></i>
-              </span>
-              <span class="post-meta-item-text">分类于</span>
-                <span itemprop="about" itemscope itemtype="http://schema.org/Thing">
-                  <a href="/categories/mysql/" itemprop="url" rel="index"><span itemprop="name">mysql</span></a>
-                </span>
-            </span>
-
-          
-  
-  <span class="post-meta-item">
-    
-      <span class="post-meta-item-icon">
-        <i class="far fa-comment"></i>
-      </span>
-      <span class="post-meta-item-text">评论数：</span>
-    
-    <a title="valine" href="/2017/10/31/innodb-data-organization/#valine-comments" itemprop="discussionUrl">
-      <span class="post-comments-count valine-comment-count" data-xid="/2017/10/31/innodb-data-organization/" itemprop="commentCount"></span>
-    </a>
-  </span>
-  
-  
-
-        </div>
-      </header>
-
-    
-    
-    
-    <div class="post-body" itemprop="articleBody">
-
-      
-          <h3 id="前言"><a href="#前言" class="headerlink" title="前言"></a><strong>前言</strong></h3><p>本文翻译自《Data Organization in InnoDB》，原文属于InnoDB官方blog，后来Oracle修改了官方blog的地址，没有找到原文链接，如果哪位找到原文链接，烦请告知。另本人水平有限，如发现翻译错误或有问题的地方，也欢迎指出。</p>
-          <!--noindex-->
-            <div class="post-button">
-              <a class="btn" href="/2017/10/31/innodb-data-organization/#more" rel="contents">
-                阅读全文 &raquo;
-              </a>
-            </div>
-          <!--/noindex-->
-        
-      
-    </div>
-
-    
-    
-    
-      <footer class="post-footer">
-        <div class="post-eof"></div>
-      </footer>
-  </article>
-  
-  
-  
-
 
   
   <nav class="pagination">
@@ -1154,7 +1165,7 @@
       <div class="site-state-item site-state-posts">
           <a href="/archives/">
         
-          <span class="site-state-item-count">15</span>
+          <span class="site-state-item-count">16</span>
           <span class="site-state-item-name">日志</span>
         </a>
       </div>
@@ -1167,7 +1178,7 @@
       <div class="site-state-item site-state-tags">
             <a href="/tags/">
           
-        <span class="site-state-item-count">20</span>
+        <span class="site-state-item-count">25</span>
         <span class="site-state-item-name">标签</span></a>
       </div>
   </nav>
@@ -1202,7 +1213,7 @@
 <div class="copyright">
   
   &copy; 2017 – 
-  <span itemprop="copyrightYear">2020</span>
+  <span itemprop="copyrightYear">2026</span>
   <span class="with-love">
     <i class="fa fa-heart"></i>
   </span>
