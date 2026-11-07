@@ -2522,4 +2522,925 @@
         <tag>Google</tag>
       </tags>
   </entry>
+  <entry>
+    <title>Colossus 核心模块设计详解：Curator、D Server 与 Custodian</title>
+    <url>/2026/11/07/google-colossus-core-modules/</url>
+    <content><![CDATA[<p>基于公开资料的整理 · <a href="/2026/11/07/google-colossus-overview/">《Colossus 系统综述》</a>的配套文档</p>
+<blockquote>
+<p><strong>阅读前须知</strong>：Google 没有公开过这三个模块的设计文档。本文把官方博客与演讲、Google 的一组分布式存储专利，以及前员工的公开评论拼在一起，尽量还原每个模块”做什么、怎么做”。</p>
+<p>每条结论都标注了来源类别：<strong>【官方】</strong> 指 Google 官方博客、演讲、论文和 SRE 报告；<strong>【专利】</strong> 指 Google 的分布式存储专利；<strong>【社区】</strong> 指前员工等在公开社区的发言；<strong>【推断】</strong> 是本文作者的分析，官方没有直接确认。</p>
+<p>专利是本文最大的信息来源，但它<strong>没有点名 Colossus</strong>，描述的也是一个以内存 + RDMA 为主要介质的系统，所以不能直接等同于生产 Colossus 的实现。第 1 节会专门说明为什么仍然值得参考。</p>
+</blockquote>
+<a id="more"></a>
+
+<hr>
+<h2 id="1-资料来源与可信度"><a href="#1-资料来源与可信度" class="headerlink" title="1 资料来源与可信度"></a>1 资料来源与可信度</h2><h3 id="1-1-来源清单"><a href="#1-1-来源清单" class="headerlink" title="1.1 来源清单"></a>1.1 来源清单</h3><table>
+<thead>
+<tr>
+<th>编号</th>
+<th>资料</th>
+<th>类别</th>
+<th>主要覆盖的模块</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>[A1]</td>
+<td>Colossus under the hood（Google Cloud 博客，2021）</td>
+<td>官方</td>
+<td>三个模块的职责定义</td>
+</tr>
+<tr>
+<td>[A2]</td>
+<td>How Colossus delivers SSD performance at HDD prices（Cloud 博客，2025）</td>
+<td>官方</td>
+<td>Curator 的 SSD 放置与迁移</td>
+</tr>
+<tr>
+<td>[A3]</td>
+<td>Colossus: the secret ingredient in Rapid Storage（Cloud 博客，2025）</td>
+<td>官方</td>
+<td>Curator 的 handle 与 fencing、D 的直连协议</td>
+</tr>
+<tr>
+<td>[A4]</td>
+<td>Cluster-Level Storage @ Google（Serenyi，PDSW 2017 主题演讲）</td>
+<td>官方</td>
+<td>Curator 部署与元数据格式、数据均衡</td>
+</tr>
+<tr>
+<td>[A5]</td>
+<td>Storage Architecture and Challenges（Fikes，2010）</td>
+<td>官方</td>
+<td>Node 层（D）职责、故障统计</td>
+</tr>
+<tr>
+<td>[A6]</td>
+<td>Case Studies in Infrastructure Change Management（Google SRE，2020）</td>
+<td>官方</td>
+<td>D 的定位、部署与迁移</td>
+</tr>
+<tr>
+<td>[A7]</td>
+<td>SRE Book 第 2 章 Production Environment（2016）</td>
+<td>官方</td>
+<td>D 的定位</td>
+</tr>
+<tr>
+<td>[A8]</td>
+<td>CacheSack（USENIX ATC 2022）</td>
+<td>官方论文</td>
+<td>D 的 buffer cache、Flash Server</td>
+</tr>
+<tr>
+<td>[A9]</td>
+<td>Disks for Data Centers（Google 白皮书，2016）</td>
+<td>官方</td>
+<td>D 对磁盘固件的需求</td>
+</tr>
+<tr>
+<td>[A10]</td>
+<td>Practical Design Considerations for Wide LRCs（FAST 2023）</td>
+<td>官方论文</td>
+<td>维护鲁棒的放置</td>
+</tr>
+<tr>
+<td>[P1]</td>
+<td>US9229901 / US9916279 <em>Single-sided distributed storage system</em></td>
+<td>专利</td>
+<td>Curator、file descriptor、存储节点</td>
+</tr>
+<tr>
+<td>[P2]</td>
+<td>US10678647 / US10318384 <em>Distributing data on distributed storage systems</em>（优先权 2013-12）</td>
+<td>专利</td>
+<td>维护层级与数据放置</td>
+</tr>
+<tr>
+<td>[P3]</td>
+<td>US9323615 <em>Efficient data reads from distributed storage systems</em>（2014 申请）</td>
+<td>专利</td>
+<td>维护域与分组放置</td>
+</tr>
+<tr>
+<td>[P4]</td>
+<td>US9292389 <em>Prioritizing data reconstruction in distributed storage systems</em></td>
+<td>专利</td>
+<td>重建优先级、嵌套码</td>
+</tr>
+<tr>
+<td>[P5]</td>
+<td>US9311194 <em>Efficient resource utilization in data centers</em></td>
+<td>专利</td>
+<td>系统层级与作业管理</td>
+</tr>
+<tr>
+<td>[C1]</td>
+<td>Hacker News 讨论 “Understanding Google’s File System”（2024），用户 the-rc、dekhn 的评论</td>
+<td>社区</td>
+<td>Curator 部署、Borg 配额</td>
+</tr>
+</tbody></table>
+<h3 id="1-2-为什么专利值得参考，又为什么要谨慎"><a href="#1-2-为什么专利值得参考，又为什么要谨慎" class="headerlink" title="1.2 为什么专利值得参考，又为什么要谨慎"></a>1.2 为什么专利值得参考，又为什么要谨慎</h3><p><strong>值得参考的理由</strong>：</p>
+<ul>
+<li><strong>术语完全一致</strong>：专利使用 cell、curator、stripe、chunk、file descriptor 等术语，与 Google 官方描述 Colossus 时用的词汇一一对应 [A1][A4]；</li>
+<li><strong>发明人</strong>：[P3] 的发明人包括 Sean Quinlan（GFS 技术负责人，2009 年 ACM Queue 访谈中介绍”分布式 Master 新系统”的人）和 Robert Cypher（《Disks for Data Centers》的作者之一）；</li>
+<li><strong>结构一致</strong>：专利中”文件 → stripe → chunk”的三级结构、复制与纠删码并存、按维护域放置等设计，与官方资料 [A4][A10] 描述的 Colossus 吻合。</li>
+</ul>
+<p><strong>需要谨慎的理由</strong>：</p>
+<ul>
+<li>专利的主体是一个<strong>单边（single-sided）分布式存储系统</strong>：数据放在内存主机（memory host）的 DRAM 中，客户端通过 RDMA 直接读写，服务端 CPU 不参与 [P1]。这与以 HDD/SSD 为主的 Colossus 不同；</li>
+<li>专利只描述”可能的实现（in some implementations）”，不保证生产系统这样做；</li>
+<li>专利里<strong>没有 Custodian 这个角色</strong>：扫描、恢复、重平衡的决策都归给 Curator 或”处理器”。生产 Colossus 中这些后台工作由 Custodian 承担 [A1][A2]。</li>
+</ul>
+<p>【推断】较合理的理解是：这组专利描述的是与 Colossus <strong>同一个控制面架构家族</strong>的系统，可能是基于 Colossus 思想的内存存储系统，也可能是 Colossus 某个阶段的设计抽象。用它来理解 Curator 的数据结构和决策逻辑是合适的，但具体参数（例如 chunk 大小）不能照搬。</p>
+<hr>
+<h2 id="2-三个模块的分工总览"><a href="#2-三个模块的分工总览" class="headerlink" title="2 三个模块的分工总览"></a>2 三个模块的分工总览</h2><h3 id="2-1-一句话定位"><a href="#2-1-一句话定位" class="headerlink" title="2.1 一句话定位"></a>2.1 一句话定位</h3><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>一句话定位</th>
+<th>类比 GFS</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>Curator</strong></td>
+<td>处理交互式控制操作的元数据服务，可水平扩展</td>
+<td>GFS Master 的前台部分</td>
+</tr>
+<tr>
+<td><strong>D Server</strong></td>
+<td>唯一直接读写物理磁盘的进程，只负责存取数据</td>
+<td>GFS chunkserver</td>
+</tr>
+<tr>
+<td><strong>Custodian</strong></td>
+<td>后台存储管理器，负责持久性、可用性和空间均衡</td>
+<td>GFS Master 的后台部分（重新复制、重平衡、垃圾回收）</td>
+</tr>
+</tbody></table>
+<p>【官方】2025 年博客把 Curator 和 Custodian 都算作”Colossus 元数据服务”的组成部分：Curator 处理文件创建、删除等交互式控制操作，Custodian 维护数据的持久性、可用性和磁盘空间均衡 [A2]。</p>
+<p>【推断】可以理解为：GFS 把前台元数据服务和后台维护都放在单一 Master 进程里；Colossus 把它拆成了两种独立扩展的角色，<strong>前台走低延迟路径，后台走高吞吐路径，互不争抢资源</strong>。</p>
+<h3 id="2-2-交互关系"><a href="#2-2-交互关系" class="headerlink" title="2.2 交互关系"></a>2.2 交互关系</h3><figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">                      +-------------------------------+</span><br><span class="line">                      |        Client Library         |</span><br><span class="line">                      |  (encoding, RAID, handle)     |</span><br><span class="line">                      +---+------------------+--------+</span><br><span class="line">         (1) open/create  |                  | (2) read/append via handle</span><br><span class="line">             delete       |                  |     (RDMA-like, direct)</span><br><span class="line">                          v                  v</span><br><span class="line">+------------------+   +-----------+    +-------------------------+</span><br><span class="line">| Bigtable         |&lt;-&gt;| Curators  |    | D Servers (HDD / SSD)   |</span><br><span class="line">| (FS metadata,    |   | (control  |---&gt;| store chunks, checksum, |</span><br><span class="line">|  1 row per file) |   |  plane)   |    | per-replica version     |</span><br><span class="line">+------------------+   +-----+-----+    +-----------+-------------+</span><br><span class="line">          ^                  |  scan results /      ^</span><br><span class="line">          |                  |  work to schedule    | (3) rebuild, rebalance,</span><br><span class="line">          |                  v                      |     migrate, transcode</span><br><span class="line">          |            +-----------+                |</span><br><span class="line">          +------------| Custodians|----------------+</span><br><span class="line">                       +-----------+  (background)</span><br></pre></td></tr></table></figure>
+
+<p>图中三条路径：(1) 控制路径，只在 open/create/delete 时访问 Curator；(2) 数据路径，客户端拿到 handle 后直接读写 D Server，不经过 Curator；(3) 后台路径，Custodian 读取元数据并直接操作 D Server 完成重建和迁移。</p>
+<p>【推断】Curator 和 Custodian 之间”扫描结果 / 待调度工作”的箭头来自专利描述：”扫描本身不修改元数据，而是为系统中的其他组件安排要做的工作” [P1][P4]。生产系统中二者具体如何交接，官方没有说明。</p>
+<hr>
+<h2 id="3-Curator：元数据与控制面"><a href="#3-Curator：元数据与控制面" class="headerlink" title="3 Curator：元数据与控制面"></a>3 Curator：元数据与控制面</h2><h3 id="3-1-职责"><a href="#3-1-职责" class="headerlink" title="3.1 职责"></a>3.1 职责</h3><p>综合 [A1][A2][A3][A4][P1][P4]，Curator 的职责可以归纳为：</p>
+<table>
+<thead>
+<tr>
+<th>职责</th>
+<th>说明</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>交互式控制操作</td>
+<td>文件创建、删除、open 等</td>
+<td>官方 [A1][A2]</td>
+</tr>
+<tr>
+<td>管理文件系统元数据</td>
+<td>维护 file map（文件到 file descriptor 的映射）</td>
+<td>官方 [A1]；专利 [P1]</td>
+</tr>
+<tr>
+<td>构造并下发 handle</td>
+<td>open 时返回包含数据所在磁盘地址的 handle</td>
+<td>官方 [A3]</td>
+</tr>
+<tr>
+<td>写者所有权管理</td>
+<td>新写者接管时，在每个数据副本上递增版本号</td>
+<td>官方 [A3]</td>
+</tr>
+<tr>
+<td>chunk 分配</td>
+<td>文件需要更多空间、重平衡或恢复时分配新 chunk</td>
+<td>专利 [P1]</td>
+</tr>
+<tr>
+<td>数据放置</td>
+<td>按维护层级为 chunk 选择存储设备</td>
+<td>专利 [P2][P3]</td>
+</tr>
+<tr>
+<td>SSD 放置与迁移</td>
+<td>按 L4 建议把新文件放到 SSD，到期后迁回 HDD</td>
+<td>官方 [A2]</td>
+</tr>
+<tr>
+<td>命名空间扫描</td>
+<td>持续扫描自己负责的命名空间，检查完整性并安排工作</td>
+<td>专利 [P1][P4]</td>
+</tr>
+<tr>
+<td>存储节点状态跟踪</td>
+<td>维护存储节点的负载与存活状态</td>
+<td>专利 [P1]</td>
+</tr>
+</tbody></table>
+<h3 id="3-2-部署形态"><a href="#3-2-部署形态" class="headerlink" title="3.2 部署形态"></a>3.2 部署形态</h3><p><strong>运行位置</strong>【官方】：CFS（Colossus File System）的 Curator <strong>运行在 Bigtable 的 tablet server 中</strong> [A4]。</p>
+<p><strong>数量随集群规模变化</strong>【社区】：一位前 Google 员工在 Hacker News 上解释 [C1]：</p>
+<blockquote>
+<p>GFS 使用 5 个 Master，通常跑在 5 台专用机器上；Colossus 则使用<strong>数量可变</strong>的 Curator 来处理全部元数据工作（类似 Unix 中的目录项和 inode，与数据块分开）。Curator 只是普通的 Borg 任务，和 YouTube、Gmail 等其他服务的任务混部在一起。集群存储越多，流量越大，Curator 越忙。很小的集群可能 5 个以内就够了，到了数百 PB 就需要非常多的 Curator。</p>
+</blockquote>
+<p>同一位评论者还提到 [C1]：Borg 要求每个身份（包括运行 Colossus 服务的系统账号）都有配额，所以需要一套机制，<strong>按存储集群规模大致成比例地给 Colossus 分配 CPU 和内存配额</strong>；集群缩容时会出现一些”有趣的情况”；监控整个存储栈也需要与集群规模成比例的资源，而且以更高优先级单独授予。</p>
+<p>【推断】Curator 运行在 tablet server 进程内，有三个直接好处：</p>
+<ol>
+<li>元数据读写是进程内访问本地 tablet，少一跳 RPC；</li>
+<li>Curator 的分片天然跟随 Bigtable 的 tablet 划分，split、合并和负载均衡都由 Bigtable 自动完成；</li>
+<li>某个 Curator 故障时，Bigtable 把对应 tablet 迁到别的 tablet server 上，Curator 随之”迁移”，不需要单独的 Curator 选主机制。</li>
+</ol>
+<h3 id="3-3-元数据模型"><a href="#3-3-元数据模型" class="headerlink" title="3.3 元数据模型"></a>3.3 元数据模型</h3><h4 id="3-3-1-Bigtable-中的文件行"><a href="#3-3-1-Bigtable-中的文件行" class="headerlink" title="3.3.1 Bigtable 中的文件行"></a>3.3.1 Bigtable 中的文件行</h4><p>【官方】[A4] 给出了一个文件元数据的示意：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">Row key: /cfs/ex-d/home/denis/myfile</span><br><span class="line">  is-finalized?  mtime, ctime, ...</span><br><span class="line">  encoding r=3.2</span><br><span class="line">  stripe 0: checksum, length -&gt; chunk0 chunk1 chunk2</span><br><span class="line">  stripe 1: checksum, length -&gt; chunk0 chunk1 chunk2</span><br><span class="line">  stripe 2: OPEN             -&gt; chunk0 chunk1 chunk2</span><br></pre></td></tr></table></figure>
+
+<p>要点：一个 Bigtable 行对应一个文件；文件由多个 stripe 组成，stripe 是复制组；stripe 有 open、closed、finalized 三种状态；文件系统元数据放在 Bigtable 的<strong>内存 locality group</strong> 中 [A4]。</p>
+<h4 id="3-3-2-专利中的-file-descriptor"><a href="#3-3-2-专利中的-file-descriptor" class="headerlink" title="3.3.2 专利中的 file descriptor"></a>3.3.2 专利中的 file descriptor</h4><p>【专利】[P1] 描述的 file descriptor 字段，与上面的文件行可以对应起来：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>含义</th>
+<th>与官方示意的对应</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>file state</td>
+<td>文件状态</td>
+<td><code>is-finalized?</code></td>
+</tr>
+<tr>
+<td>data chunks</td>
+<td>每个 stripe 的副本数（复制文件）</td>
+<td><code>encoding r=...</code></td>
+</tr>
+<tr>
+<td>stripe length</td>
+<td>每个 stripe 的字节数</td>
+<td>stripe 的 <code>length</code></td>
+</tr>
+<tr>
+<td>sub-stripe length</td>
+<td>每个 sub-stripe 的字节数</td>
+<td>—</td>
+</tr>
+<tr>
+<td>stripe 数组</td>
+<td>每个 stripe 一个 protocol buffer，描述其中的副本</td>
+<td><code>stripe N: ... -&gt; chunk...</code></td>
+</tr>
+</tbody></table>
+<p>每个 stripe 的 protocol buffer 包含 [P1]：</p>
+<ul>
+<li><strong>stripe replica handle</strong>：副本的句柄；</li>
+<li><strong>持有该副本的存储节点身份</strong>；</li>
+<li><strong>该副本的当前状态</strong>。</li>
+</ul>
+<p>此外 [P1][P4]：</p>
+<ul>
+<li>file descriptor 中可以带一个 <strong>client key</strong>（例如 32 位），它对某个存储节点上的某个 chunk 唯一，客户端凭它直接读取该 chunk；</li>
+<li>复制文件的每个 stripe 是一个逻辑 chunk，被复制成多个副本；纠删码文件的每个 stripe 由多个 data chunk 和 code chunk 组成，合起来构成一个码字（code word）；</li>
+<li><strong>每个 stripe 的放置相互独立</strong>，与同一文件其他 stripe 的位置无关。</li>
+</ul>
+<p>【推断】”每个 stripe 独立放置”意味着同一个文件的数据分散在大量磁盘上：读大文件时可以并行利用很多磁头，单盘故障时受影响的也只是零散的 stripe，重建负载会自然打散到全集群。</p>
+<h3 id="3-4-元数据访问模式"><a href="#3-4-元数据访问模式" class="headerlink" title="3.4 元数据访问模式"></a>3.4 元数据访问模式</h3><p>【专利】[P1][P2] Curator 对持久化元数据有三种访问模式：</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>典型用途（推断）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td><strong>只读（read-only）</strong></td>
+<td>open、stat、查询数据位置</td>
+</tr>
+<tr>
+<td><strong>文件事务（file transactions）</strong></td>
+<td>创建、删除、finalize 等修改文件级属性的操作</td>
+</tr>
+<tr>
+<td><strong>stripe 事务（stripe transactions）</strong></td>
+<td>追加时新开 stripe、关闭 stripe、替换或迁移某个 chunk</td>
+</tr>
+</tbody></table>
+<p>【推断】把 stripe 级修改和文件级修改分开，符合 append-only 模型：日常追加只会修改”最后一个 stripe”，重建或迁移也只修改某个 stripe 的 chunk 列表，事务粒度小，冲突少。再加上一个文件就是一行，Bigtable 的<strong>单行原子性</strong>就足以保证这些事务的原子性，不需要跨行或分布式事务。</p>
+<h3 id="3-5-open-与-handle"><a href="#3-5-open-与-handle" class="headerlink" title="3.5 open 与 handle"></a>3.5 open 与 handle</h3><p>【官方】[A3]：客户端创建或读取文件时，先 open 得到一个 handle。handle 是一组状态，包含文件存储方式的全部信息，包括数据在哪些磁盘上。之后读写都用 handle <strong>直接和磁盘通信</strong>，走优化过的类 RDMA 网络协议。</p>
+<p>【专利】[P1] 补充了失效处理：如果存储节点不可用，或者数据已经被迁到别的节点，客户端请求会失败，<strong>客户端随后重新向 Curator 查询</strong>。</p>
+<p>【推断】这是一种”乐观缓存 + 失败重查”的设计：Curator 不需要在数据迁移时主动通知客户端（那样需要跟踪所有打开文件的客户端），代价是迁移后第一次访问多一次往返。这也是 Custodian 可以在后台自由迁移数据的前提。</p>
+<h3 id="3-6-chunk-分配"><a href="#3-6-chunk-分配" class="headerlink" title="3.6 chunk 分配"></a>3.6 chunk 分配</h3><p>【专利】[P1] 描述的分配流程：</p>
+<ol>
+<li>Curator 维护一张 <strong>load map</strong>，记录各存储节点的负载和存活状态；</li>
+<li>需要分配 chunk 时（客户端需要更多空间、重平衡或恢复），Curator <strong>生成一组候选存储节点</strong>，向每个候选节点发送 “allocate chunk” 请求；</li>
+<li>存储节点如果<strong>过载或空间不足，可以拒绝</strong>；</li>
+<li>被拒绝时，Curator 换一个节点重试。</li>
+</ol>
+<p>Curator 掌握的存储节点状态包括 [P1]：<strong>容量、剩余空间、负载、从客户端视角看到的延迟、当前状态</strong>。获取方式有两种：直接查询存储节点，或者向客户端收集延迟统计。</p>
+<p>【推断】”存储节点可拒绝”是一种分布式的准入控制：Curator 的 load map 不必实时精确，最终由存储节点根据本地真实状态拍板。”从客户端视角看到的延迟”说明放置决策会考虑网络拓扑和慢节点，不只看磁盘本身。</p>
+<h3 id="3-7-数据放置：维护层级"><a href="#3-7-数据放置：维护层级" class="headerlink" title="3.7 数据放置：维护层级"></a>3.7 数据放置：维护层级</h3><p>这是专利中写得最详细的部分，也与官方的宽条带 LRC 论文 [A10] 互相印证。</p>
+<h4 id="3-7-1-维护层级"><a href="#3-7-1-维护层级" class="headerlink" title="3.7.1 维护层级"></a>3.7.1 维护层级</h4><p>【专利】[P2] Curator 会确定一个<strong>维护层级（maintenance hierarchy）</strong>，标出在哪些层级上做维护不会影响用户访问数据。示例中有 5 级，从上到下：</p>
+<figure class="highlight plain"><table><tr><td class="code"><pre><span class="line">Level 1  power plant</span><br><span class="line">           |</span><br><span class="line">Level 2  power module distribution center</span><br><span class="line">           |</span><br><span class="line">Level 3  bus duct</span><br><span class="line">           |</span><br><span class="line">Level 4  rack</span><br><span class="line">           |</span><br><span class="line">Level 5  storage device</span><br></pre></td></tr></table></figure>
+
+<ul>
+<li>每个层级包含若干<strong>维护单元（maintenance unit）</strong>，每个单元有 active / inactive 两种状态；</li>
+<li>一个维护单元可以是由同一个配电单元或同一条母线槽（bus duct）供电的一组存储设备，也可以是同一个冷却单元覆盖的设备；</li>
+<li>层级可以按电力划分，也可以按冷却划分，或两者组合；</li>
+<li>一个机架可以同时属于多个维护单元（层级不一定是严格的树）。</li>
+</ul>
+<p>[P5] 中的”系统层级”给出了另一种划分：第 1 级是主机（处理器、内存、网卡），第 2 级是机架的供电、通信、冷却设备，第 3 级是 cell 的供电、通信、冷却设备，第 4 级是配电中心模块。</p>
+<h4 id="3-7-2-放置算法"><a href="#3-7-2-放置算法" class="headerlink" title="3.7.2 放置算法"></a>3.7.2 放置算法</h4><p>【专利】[P2][P3] 的核心思路：<strong>把一个文件（或一个 stripe 组）的 chunk 分散到多个维护单元上，保证任何一个（或阈值个）维护单元进入 inactive 状态时，文件仍然可以访问或重建。</strong> 具体有两种方法。</p>
+<p>方法一，随机选择加校验：</p>
+<ol>
+<li>随机选出与 chunk 数量相同的存储设备（可用简单抽样、概率抽样、分层抽样或整群抽样）；</li>
+<li>检查这组设备能否在一个（或阈值个）维护单元不可用时保持文件可访问；</li>
+<li>不满足就重新随机选一组，或在原有选择上增删若干随机设备，直到满足为止。</li>
+</ol>
+<p>方法二，有序环形列表：</p>
+<ol>
+<li>预先构造一个<strong>有序环形列表</strong>，保证列表中<strong>相邻的存储设备属于不同的维护单元</strong>（或者连续若干个设备都属于不同维护单元或不同地理位置）；</li>
+<li>放置时从列表中<strong>取连续的 N 个设备</strong>，N 等于 chunk 数；</li>
+<li>不满足约束就换一段连续设备。</li>
+</ol>
+<p>另外还有一条简单约束：<strong>限制单个维护单元中能放的 chunk 数</strong> [P2][P3]。</p>
+<p>【官方】这与 FAST 2023 宽条带 LRC 论文的结论一致：同一 stripe 的多个块不能落在同一个维护域里，否则一次计划内维护（例如内核升级）就可能让 stripe 不可用 [A10]。</p>
+<p>【推断】方法一实现简单、负载天然均匀；方法二把约束检查前移到离线构造列表的阶段，在线分配时几乎不用试错，适合宽条带（例如约 80 块的 LRC），因为宽条带随机选中合法组合的概率很低。</p>
+<h3 id="3-8-写者所有权与-fencing"><a href="#3-8-写者所有权与-fencing" class="headerlink" title="3.8 写者所有权与 fencing"></a>3.8 写者所有权与 fencing</h3><p>【官方】[A3] 当新客户端以 append 模式打开一个正在被写的对象时：</p>
+<ol>
+<li>Curator <strong>以事务方式在每个数据副本上递增版本号</strong>，把旧写者锁在外面；</li>
+<li>旧写者再追加时会失败，因为它的所有权绑定在旧版本号上；</li>
+<li>每次追加都带写入偏移量，保证网络分区和请求重放时数据仍然正确。</li>
+</ol>
+<p>【推断】这里有两点值得注意：</p>
+<ul>
+<li><strong>版本号存在 D Server 上的每个副本里</strong>，而不只是存在 Curator 的元数据中。即使旧客户端拿着缓存的 handle 绕过 Curator 直接写盘，也会在 D Server 处被拒绝。这是 Curator 与 D Server 协作完成的 fencing；</li>
+<li>递增版本号要触达所有副本，如果某个副本所在的 D Server 暂时不可用，Curator 很可能需要把该副本标记为失效，或者开一个新 stripe 继续写，具体做法官方没有说明。</li>
+</ul>
+<h3 id="3-9-SSD-放置与生命周期迁移"><a href="#3-9-SSD-放置与生命周期迁移" class="headerlink" title="3.9 SSD 放置与生命周期迁移"></a>3.9 SSD 放置与生命周期迁移</h3><p>【官方】[A2]：</p>
+<ul>
+<li>用户可以通过路径参数强制放置，例如 <code>partition=ssd</code>（全部在 SSD）或 <code>partition=ssd.1</code>（只有一个副本在 SSD），Curator 据此选择介质；</li>
+<li>在 L4 writeback 模式下，L4 <strong>建议 Curator</strong> 新文件是否放 SSD、放多久；Curator 照此把新文件写到 SSD 而不是默认的 HDD；</li>
+<li><strong>到期后如果文件仍然存在，Curator 把数据从 SSD 迁到 HDD</strong>；最好的情况是文件在迁移前就被删除，完全不产生 HDD I/O。</li>
+</ul>
+<p>【推断】官方博客把这次迁移归给 Curator，而不是 Custodian。这说明”按策略到期迁移”属于 Curator 的职责范围，而 Custodian 侧重”维持健康状态”（冗余、均衡）。不过两者边界可能并不严格。</p>
+<h3 id="3-10-后台扫描"><a href="#3-10-后台扫描" class="headerlink" title="3.10 后台扫描"></a>3.10 后台扫描</h3><p>【专利】[P1][P4] 每个 Curator <strong>持续扫描它负责的那部分命名空间，大约每分钟把所有元数据检查一遍</strong>。扫描的作用：</p>
+<ul>
+<li>检查元数据的完整性；</li>
+<li>找出需要做的工作（例如副本数不足的 stripe）；</li>
+<li>生成统计信息。</li>
+</ul>
+<p>扫描与 Curator 的其他操作并发进行；<strong>扫描本身不修改元数据</strong>，只是给系统中的其他组件安排工作，并计算统计数据。</p>
+<p>【官方】这与 Fikes 2010 年的说法呼应：”元数据空间使可用性分析成为可能” [A5]。</p>
+<p>【推断】”每分钟扫一遍”能做到，靠的是元数据放在 Bigtable 内存 locality group 中、且按 tablet 分片，每个 Curator 只负责一小段键空间。扫描产出的”待办工作”很可能就是 Custodian 的输入。</p>
+<h3 id="3-11-元数据的递归托管"><a href="#3-11-元数据的递归托管" class="headerlink" title="3.11 元数据的递归托管"></a>3.11 元数据的递归托管</h3><p>【官方】[A4]：元数据约为数据量的 1/10000。100 PB 数据对应 10 TB 元数据，存进一个更小的 Colossus 需要 1 GB 元元数据，再往下是 100 KB，最后放进 Chubby。迁移初期，CFS 自己的元数据 Bigtable 还存在 GFS 上。</p>
+<hr>
+<h2 id="4-D-Server：数据面存储节点"><a href="#4-D-Server：数据面存储节点" class="headerlink" title="4 D Server：数据面存储节点"></a>4 D Server：数据面存储节点</h2><h3 id="4-1-定位"><a href="#4-1-定位" class="headerlink" title="4.1 定位"></a>4.1 定位</h3><p>【官方】综合 [A6][A7]：</p>
+<ul>
+<li>D 是 <strong>Disk</strong> 的缩写，是 GFS chunkserver 的对应物；</li>
+<li>D 是存储栈的最底层，被设计为<strong>唯一能直接读写物理磁盘的应用</strong>；</li>
+<li>D 管理原始数据的访问，Colossus（Curator）管理”哪些数据在哪个 D 上”；</li>
+<li>客户端先向 Colossus 查询应读写哪些 D，然后<strong>直接</strong>和 D 通信；</li>
+<li>D 同时使用 HDD 和 flash；</li>
+<li>D 运行在集群中几乎所有机器上（2016 年的描述）[A7]。</li>
+</ul>
+<h3 id="4-2-职责：Node-层存储"><a href="#4-2-职责：Node-层存储" class="headerlink" title="4.2 职责：Node 层存储"></a>4.2 职责：Node 层存储</h3><p>Fikes 2010 年的幻灯片 [A5] 把存储栈最底层称为 “Node Storage”，用途是”把磁盘导出到网络上”，并列出了职责。结合 SRE 书对 D 的描述 [A7]，这一层就是 D：</p>
+<table>
+<thead>
+<tr>
+<th>职责</th>
+<th>原文</th>
+<th>说明（推断）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>导出并校验磁盘</td>
+<td>Exports and verifies disks</td>
+<td>网络化磁盘，加上端到端校验和</td>
+</tr>
+<tr>
+<td>上层存储的构件</td>
+<td>Building-block for higher-level storage</td>
+<td>Colossus、Bigtable 等都构建在它之上</td>
+</tr>
+<tr>
+<td>磁盘访问性能调优的单一入口</td>
+<td>Single spot for tuning disk access performance</td>
+<td>I/O 调度、合并、预取都集中在这里做</td>
+</tr>
+<tr>
+<td>节点增删与维修管理</td>
+<td>Management of node addition, repair and removal</td>
+<td>配合排空（drain）与重建</td>
+</tr>
+<tr>
+<td>用户资源计费</td>
+<td>Provides user resource accounting (e.g. I/O ops)</td>
+<td>按用户统计 I/O 次数</td>
+</tr>
+<tr>
+<td>跨用户资源共享控制</td>
+<td>Enforces resource sharing across users</td>
+<td>多租户 I/O 隔离</td>
+</tr>
+</tbody></table>
+<p>【社区】D “更像块服务器而不是文件服务器”，”除了校验和之外基本不提供别的功能”（非官方，来自前员工的博客）。</p>
+<h3 id="4-3-部署形态的演变"><a href="#4-3-部署形态的演变" class="headerlink" title="4.3 部署形态的演变"></a>4.3 部署形态的演变</h3><table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>形态</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>迁移前</td>
+<td>GFS chunkserver 不跑在 Borg 上；早期也有”chunkserver 支撑的 Colossus cell”</td>
+<td>官方 [A6]；社区 [C1]</td>
+</tr>
+<tr>
+<td>2008 年起</td>
+<td>D 作为 Borg 任务运行，和用户作业混部；为了给 D 腾出资源，专门做了 Steamroller 项目回收 Borg 配额</td>
+<td>官方 [A6]</td>
+</tr>
+<tr>
+<td>混部时期的问题</td>
+<td>低端机器（例如 Nocona 平台）资源不够同时跑存储栈和用户作业，任务调度不上去，集群”看起来像少了一些磁盘”</td>
+<td>社区 [C1]</td>
+</tr>
+<tr>
+<td>2013 年起</td>
+<td>部署第一代”存储专用硬件”：只提供远程存储、不跑本地计算的磁盘服务器，显著改善尾延迟</td>
+<td>官方 [A6]</td>
+</tr>
+<tr>
+<td>2012–2018</td>
+<td>Diskless 项目移除计算节点本地盘，生产任务死亡中 25%–30% 曾归因于磁盘故障</td>
+<td>官方 [A6]</td>
+</tr>
+<tr>
+<td>现在</td>
+<td>D Server 托管 HDD 或 SSD [A2]；2021 年博客称其为”网络附加磁盘” [A1]</td>
+<td>官方</td>
+</tr>
+</tbody></table>
+<p>【推断】D 从”混部在计算节点上的守护进程”演进为”跑在存储专用硬件上的服务”，这是计算存储解耦的关键一步：D 的性能不再受同机用户作业的 CPU 和内存干扰，尾延迟更可控。</p>
+<h3 id="4-4-数据面协议"><a href="#4-4-数据面协议" class="headerlink" title="4.4 数据面协议"></a>4.4 数据面协议</h3><p>【官方】[A3]：客户端用 handle 中的磁盘地址，通过<strong>优化过的类 RDMA 网络协议</strong>直接与磁盘通信，协议细节见 Snap 论文（Google 的用户态主机网络栈，其数据面引擎为 Pony Express）。追加写时客户端<strong>并行写所有副本</strong>，用 quorum 技术避免等待慢节点。</p>
+<p>【专利】[P1] 中的单边存储模型可以作为参考：</p>
+<ul>
+<li>存储节点上的进程把一组内存区域注册到网卡，可设为只读或读写；网卡为每个注册区域生成一个 client key；</li>
+<li>连接建立后，客户端通过网卡硬件直接访问注册的内存，<strong>存储节点的 CPU 完全不参与</strong>；</li>
+<li>网卡单边操作只支持简单的读、写和 compare-and-swap，客户端库负责把”查找、插入”等高层命令翻译成一串网卡原语操作；</li>
+<li>好处是存储节点 CPU 再忙，读请求的延迟也低且可预测。</li>
+</ul>
+<p>【推断】HDD/SSD 上的 D Server 不可能像 DRAM 那样完全单边访问，因为磁盘 I/O 需要软件调度。但”客户端持有凭证直接访问存储节点、不经过元数据服务”的思路是一致的。2025 年博客说”类 RDMA”而不是”RDMA”，也暗示 D 的协议是 RDMA 风格的语义（低开销、内核旁路），由 Snap/Pony Express 在软件中实现，而不是纯硬件单边操作。</p>
+<h3 id="4-5-写入正确性：校验和与版本号"><a href="#4-5-写入正确性：校验和与版本号" class="headerlink" title="4.5 写入正确性：校验和与版本号"></a>4.5 写入正确性：校验和与版本号</h3><ul>
+<li><strong>校验和</strong>【官方】：元数据中每个 stripe 记录了 checksum [A4]；Node 层的职责里明确包括”校验磁盘” [A5]；</li>
+<li><strong>副本版本号</strong>【官方】：fencing 依赖”每个数据副本上的版本号”[A3]，所以 D Server 必须为每个副本保存版本号，并在写入时比对；</li>
+<li><strong>偏移量检查</strong>【官方】：每次追加都带写入偏移量 [A3]，D Server 侧应能据此拒绝重复或乱序的写入（推断）。</li>
+</ul>
+<p>【专利】[P1] 中客户端读到损坏副本时会通知 Curator；Curator 尝试重建该副本，无法重建时用一个新的未初始化副本替换它。</p>
+<h3 id="4-6-Buffer-cache-与预取"><a href="#4-6-Buffer-cache-与预取" class="headerlink" title="4.6 Buffer cache 与预取"></a>4.6 Buffer cache 与预取</h3><p>【官方】[A8]：D Server（论文中称 Disk Server）的 buffer cache 会把最近访问的数据缓存几秒，并预取少量数据，所以读刚访问过的数据不一定产生磁盘读。Google 鼓励 Colossus 用户在设计负载时利用这层缓存。</p>
+<p>CacheSack 在估算 flash cache 的收益时，专门对每个 cache index server 维护了一个 buffer cache 模拟器，以免把本来就会命中 D 内存缓存的访问误算为磁盘读 [A8]。</p>
+<h3 id="4-7-HDD-与-SSD-两类-D-Server"><a href="#4-7-HDD-与-SSD-两类-D-Server" class="headerlink" title="4.7 HDD 与 SSD 两类 D Server"></a>4.7 HDD 与 SSD 两类 D Server</h3><table>
+<thead>
+<tr>
+<th>类型</th>
+<th>用途</th>
+<th>来源</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>HDD D Server</td>
+<td>承载绝大部分容量；新数据均匀打散，冷数据迁往大盘</td>
+<td>官方 [A2][A4]</td>
+</tr>
+<tr>
+<td>SSD D Server</td>
+<td><code>partition=ssd</code> 强制放置、<code>ssd.1</code> 混合放置中的 SSD 副本、L4 writeback 写入的新文件</td>
+<td>官方 [A2]</td>
+</tr>
+<tr>
+<td>Flash Server（L4 读缓存）</td>
+<td>存放 L4 读缓存数据，被准入时<strong>直接从 Disk Server 拉取数据</strong></td>
+<td>官方 [A2][A8]</td>
+</tr>
+</tbody></table>
+<p>【推断】Flash Server 很可能就是 SSD 介质上的 D Server，或者是复用 D 协议的独立服务。CacheSack 论文说缓存块存放在”固定大小的 Colossus 文件（通常 1 GiB）”中 [A8]，说明 L4 缓存本身也是以 Colossus 文件的形式存在 SSD 上的。</p>
+<h3 id="4-8-D-对磁盘硬件的诉求"><a href="#4-8-D-对磁盘硬件的诉求" class="headerlink" title="4.8 D 对磁盘硬件的诉求"></a>4.8 D 对磁盘硬件的诉求</h3><p>《Disks for Data Centers》白皮书 [A9] 从存储服务的视角向磁盘厂商提出了需求，可以看作 D 这一层在磁盘管理上的关注点：</p>
+<table>
+<thead>
+<tr>
+<th>白皮书提议</th>
+<th>与 D 的关系（推断）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>关注”磁盘集合”而不是单盘</td>
+<td>数据已经有冗余，单盘可以容忍更高误码率，以换取容量或性能</td>
+</tr>
+<tr>
+<td>主机管理的读重试（host-managed read retries）</td>
+<td>读一块数据失败时，与其让磁盘固件长时间重试，不如由上层立即从其他副本或编码块读，改善尾延迟</td>
+</tr>
+<tr>
+<td>后台任务与后台管理 API</td>
+<td>磁盘自身的后台扫描等任务应该能被 D 调度，避免干扰前台 I/O</td>
+</tr>
+<tr>
+<td>优化队列管理</td>
+<td>提升 IOPS</td>
+</tr>
+<tr>
+<td>灵活容量、更大扇区</td>
+<td>提升容量与 TCO</td>
+</tr>
+</tbody></table>
+<h3 id="4-9-准入与负载反馈"><a href="#4-9-准入与负载反馈" class="headerlink" title="4.9 准入与负载反馈"></a>4.9 准入与负载反馈</h3><p>【专利】[P1]：存储节点在过载或空间不足时可以<strong>拒绝 chunk 分配请求</strong>；Curator 会查询存储节点的容量、剩余空间、负载和状态。</p>
+<p>【官方】PDSW 2017 的集群可视化以”每个 D Server 一个方块、大小表示磁盘容量、颜色表示磁头利用率”的方式呈现集群状态 [A4]，说明<strong>每个 D 的磁头利用率</strong>是存储效率优化的核心观测指标。</p>
+<hr>
+<h2 id="5-Custodian：后台存储管理"><a href="#5-Custodian：后台存储管理" class="headerlink" title="5 Custodian：后台存储管理"></a>5 Custodian：后台存储管理</h2><h3 id="5-1-定位与职责"><a href="#5-1-定位与职责" class="headerlink" title="5.1 定位与职责"></a>5.1 定位与职责</h3><p>【官方】Custodian 是后台存储管理器 [A1]，维护数据的<strong>持久性和可用性</strong>以及<strong>磁盘空间均衡</strong> [A2]，具体任务包括<strong>磁盘空间均衡和 RAID 重建</strong> [A1]，同时维持整体效率。</p>
+<p>公开资料中与 Custodian 相关的工作可以归为四类：</p>
+<table>
+<thead>
+<tr>
+<th>工作</th>
+<th>依据</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>冗余恢复（RAID 重建）</td>
+<td>官方 [A1]；重建策略见专利 [P4]</td>
+</tr>
+<tr>
+<td>磁盘空间均衡</td>
+<td>官方 [A1][A2]</td>
+</tr>
+<tr>
+<td>冷数据向大容量磁盘迁移</td>
+<td>官方 [A4]（”Colossus rebalances old, cold data”），未明确说由 Custodian 执行（推断归属）</td>
+</tr>
+<tr>
+<td>冗余方案转换（转码）</td>
+<td>由应用决定 [Morph 论文]，Custodian 是否参与执行未公开</td>
+</tr>
+</tbody></table>
+<h3 id="5-2-冗余恢复：先等一等，再按风险排序"><a href="#5-2-冗余恢复：先等一等，再按风险排序" class="headerlink" title="5.2 冗余恢复：先等一等，再按风险排序"></a>5.2 冗余恢复：先等一等，再按风险排序</h3><h4 id="5-2-1-为什么要等"><a href="#5-2-1-为什么要等" class="headerlink" title="5.2.1 为什么要等"></a>5.2.1 为什么要等</h4><p>【官方】Fikes 2010 年引用 Storage Analytics 团队的数据 [A5]：</p>
+<ul>
+<li><strong>90% 的故障事件持续不到 10 分钟</strong>，所以”在启动恢复操作前先等一等是值得的”；</li>
+<li>10% 的故障属于相关性突发；大的突发通常与机架高度相关；</li>
+<li>有相关性故障时，副本数从 2 增加到 3，MTTF 只提升 11 倍（无相关性时提升 3500 倍）。</li>
+</ul>
+<h4 id="5-2-2-有效冗余度与两级优先级"><a href="#5-2-2-有效冗余度与两级优先级" class="headerlink" title="5.2.2 有效冗余度与两级优先级"></a>5.2.2 有效冗余度与两级优先级</h4><p>【专利】[P4] 给出了一个完整的重建优先级算法，正好对应”先等一等，但高风险的立刻修”：</p>
+<p><strong>第一步，为每个 stripe 计算有效冗余度（effective redundancy）</strong>，即在当前状态下还能再承受多少个故障域失效：</p>
+<table>
+<thead>
+<tr>
+<th>stripe 类型</th>
+<th>有效冗余度的计算方式</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>复制 stripe</td>
+<td>至少还有一个可用副本的<strong>不同故障域</strong>的个数</td>
+</tr>
+<tr>
+<td>纠删码 stripe（机架级）</td>
+<td>在该层级中，还能有多少个故障域进入 inactive 状态而数据仍可访问</td>
+</tr>
+<tr>
+<td>纠删码 stripe（cell / 配电级）</td>
+<td>找出包含该 stripe 最多 chunk 的那个故障域，按它失效的情况计算；有多个并列时随机选一个</td>
+</tr>
+<tr>
+<td>嵌套码 stripe</td>
+<td>分别计算”列有效冗余度”（列内能由其他块重建的块数）和”stripe 有效冗余度”</td>
+</tr>
+</tbody></table>
+<p><strong>第二步，按数据的可用性等级和有效冗余度分两级处理</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>处理对象</th>
+<th>时机</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>第一优先级</td>
+<td>高可用等级数据中，有效冗余度<strong>低于阈值</strong>的不可访问 chunk</td>
+<td><strong>立即</strong>重建</td>
+</tr>
+<tr>
+<td>第二优先级</td>
+<td>低可用等级数据的不可访问 chunk；以及有效冗余度<strong>不低于阈值</strong>的高可用数据 chunk</td>
+<td>等待一个时间阈值后再重建，专利给出的例子是<strong>约 15–30 分钟</strong></td>
+</tr>
+</tbody></table>
+<p>此外 [P4]：</p>
+<ul>
+<li>故障域进入 inactive 状态时（计划内维护、计划外故障或其他原因），要<strong>更新所有相关 stripe 的有效冗余度</strong>；</li>
+<li>“损坏的 chunk”包括被纠错码检测出错误的 chunk、整盘丢失的 chunk，以及<strong>因所在主机被关机维护而暂时不可用的 chunk</strong>，后者可以通过”哪些主机正在关机”直接识别。</li>
+</ul>
+<p>【推断】这一机制把”等待”和”风险”结合了起来：大多数短暂故障在等待期内自行恢复，节省了大量无谓的重建流量；而真正危险的 stripe（再坏一块就丢数据）不等待，立即修复。15–30 分钟的等待窗口与”90% 的故障在 10 分钟内结束”的统计相吻合。</p>
+<h3 id="5-3-嵌套码与局部重建"><a href="#5-3-嵌套码与局部重建" class="headerlink" title="5.3 嵌套码与局部重建"></a>5.3 嵌套码与局部重建</h3><p>【专利】[P4] 描述了一种嵌套码（nested code）结构：数据块排成二维数组，每<strong>列</strong>有 X 个列校验块（code-check chunk），整个数组另有 Y 个字校验块（word-check chunk），还可以为字校验块再生成列校验块。</p>
+<p>专利中的示例：42 个数据块（D0–D41）加 8 个校验块（C0–C7），共 50 块，构成一个码字；数据块分成 7 列，每列配 2 个拆分的列校验块（由 C0、C1 拆分得到），C2–C7 为 6 个字校验块，单独成一列。</p>
+<p>重建分两步：</p>
+<ol>
+<li><strong>列内重建</strong>：一列中损坏不超过 X 块时，只用本列的健康块和本列的列校验块即可修复；</li>
+<li><strong>跨列重建</strong>：某列损坏超过 X 块时，再动用字校验块。</li>
+</ol>
+<p>专利的说明是：这样一来，<strong>只有当单个数据中心内损坏超过 X 块时，才需要跨数据中心通信</strong>（跨数据中心通信更慢、更贵）。</p>
+<p>【推断】这种”局部校验 + 全局校验”的结构与后来的 LRC（局部可修复码）思路一致。宽条带 LRC 论文 [A10] 说明 Google 生产集群使用了宽度约 50 和约 80 的 LRC，嵌套码可以看作它的前身或同类设计。专利中”数据块 256 字节”的例子明显对应内存系统，不适用于磁盘上的 Colossus。</p>
+<h3 id="5-4-磁盘空间均衡与冷热迁移"><a href="#5-4-磁盘空间均衡与冷热迁移" class="headerlink" title="5.4 磁盘空间均衡与冷热迁移"></a>5.4 磁盘空间均衡与冷热迁移</h3><p>【官方】PDSW 2017 [A4] 描述的目标是”让每块磁盘既满又忙”：每块盘上的热数据量相近（磁头都在忙），剩余空间用冷数据填满（盘都是满的）。实现方式是：</p>
+<ol>
+<li><strong>新写入的数据均匀分布到集群内所有磁盘</strong>（这一步发生在 Curator 分配 chunk 时）；</li>
+<li><strong>Colossus 把老的冷数据重新均衡到大容量磁盘上</strong>（这一步是后台工作，推断由 Custodian 执行）。</li>
+</ol>
+<p>【官方】2021 年博客 [A1] 也说：新写入的（较热的）数据均匀分布到所有磁盘，数据变老、变冷后被重新均衡并迁到大容量磁盘上。</p>
+<p>【官方】PDSW 2017 还列出了”填满磁盘”的现实约束 [A4]：文件系统在 100% 满时工作不正常；没有空闲空间就无法为升级和维修下线容量；各团队不愿意贴着 100% 配额运行；管理员对统计超卖心存顾虑；供应链存在不确定性。这些约束决定了 Custodian 的均衡目标不是”100% 满”，而是保留一定余量。</p>
+<h3 id="5-5-排空与维护配合"><a href="#5-5-排空与维护配合" class="headerlink" title="5.5 排空与维护配合"></a>5.5 排空与维护配合</h3><p>【专利】[P1][P4]：纠删码可以用来维护数据完整性、为了降低延迟而重建数据，或者<strong>更快地排空（drain）机器</strong>。</p>
+<p>【推断】排空一台机器时，不一定要从这台机器上把数据读出来再写走（这台机器可能已经很慢或即将下线），可以用同一 stripe 中其他节点上的数据块和校验块，在别处重建出这台机器上的 chunk，把读负载分散到很多台机器上。这也是 Custodian 可能使用的手段。</p>
+<h3 id="5-6-冗余方案转换（转码）"><a href="#5-6-冗余方案转换（转码）" class="headerlink" title="5.6 冗余方案转换（转码）"></a>5.6 冗余方案转换（转码）</h3><p>【论文】Morph（SOSP 2024，CMU 与 Google 合作）分析了 Google 集群中一个最大的数据服务，发现典型的冗余生命周期是：写入时 3 副本，约 1 天后转为窄 RS（如 RS(8,12)），约 1 个月后转为中等 LRC（如 LRC(32,38)），数个月后转为宽 LRC（如 LRC(64,74)）。论文指出：</p>
+<ul>
+<li><strong>冗余方案由应用（数据服务）决定，而不是由文件系统决定</strong>；</li>
+<li>大多数文件系统不把转码作为原生操作，应用的做法是读出数据、用新编码写入新文件、删除旧文件。</li>
+</ul>
+<p>【推断】如果 Colossus 也是这样，那么转码的 I/O 主要由应用发起，Custodian 只负责新文件的冗余维持。是否存在由 Custodian 执行的原生转码，公开资料没有说明。</p>
+<hr>
+<h2 id="6-三模块协作的典型流程"><a href="#6-三模块协作的典型流程" class="headerlink" title="6 三模块协作的典型流程"></a>6 三模块协作的典型流程</h2><h3 id="6-1-创建并追加写"><a href="#6-1-创建并追加写" class="headerlink" title="6.1 创建并追加写"></a>6.1 创建并追加写</h3><table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>执行者</th>
+<th>动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>客户端 → Curator</td>
+<td>以 append 模式创建或打开文件</td>
+</tr>
+<tr>
+<td>2</td>
+<td>Curator</td>
+<td>按路径参数或 L4 建议选择介质（HDD/SSD），按维护层级选择 D Server，向候选 D 发 allocate chunk 请求（D 可拒绝）[P1][A2]</td>
+</tr>
+<tr>
+<td>3</td>
+<td>Curator → 客户端</td>
+<td>返回 handle（含磁盘地址），客户端在进程内缓存 [A3]</td>
+</tr>
+<tr>
+<td>4</td>
+<td>客户端 → D Server</td>
+<td>用 handle 并行写所有副本，带写入偏移量，quorum 确认后返回 [A3]</td>
+</tr>
+<tr>
+<td>5</td>
+<td>Curator</td>
+<td>写满一个 stripe 后关闭它，新开 stripe（stripe 事务）；文件写完后 finalize [A4][P1]</td>
+</tr>
+</tbody></table>
+<h3 id="6-2-读与降级读"><a href="#6-2-读与降级读" class="headerlink" title="6.2 读与降级读"></a>6.2 读与降级读</h3><table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>执行者</th>
+<th>动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>1</td>
+<td>客户端 → Curator</td>
+<td>open，取得 handle（只读元数据访问）</td>
+</tr>
+<tr>
+<td>2</td>
+<td>客户端 → L4</td>
+<td>可选：查询 SSD 读缓存，命中则从 Flash Server 读取 [A2]</td>
+</tr>
+<tr>
+<td>3</td>
+<td>客户端 → D Server</td>
+<td>直接读取所需 chunk；D 可能命中自己的 buffer cache [A8]</td>
+</tr>
+<tr>
+<td>4</td>
+<td>客户端</td>
+<td>某个 chunk 读失败或太慢时，读同一 stripe 的其他数据块和校验块在线重建（推断，依据”纠删码可用于降低延迟的重建” [P4]）</td>
+</tr>
+<tr>
+<td>5</td>
+<td>客户端 → Curator</td>
+<td>如果 D 不可用或数据已迁移，重新向 Curator 查询 [P1]</td>
+</tr>
+</tbody></table>
+<h3 id="6-3-磁盘故障"><a href="#6-3-磁盘故障" class="headerlink" title="6.3 磁盘故障"></a>6.3 磁盘故障</h3><table>
+<thead>
+<tr>
+<th>时间</th>
+<th>执行者</th>
+<th>动作</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>t0</td>
+<td>D / 客户端</td>
+<td>磁盘或主机失效；客户端读写失败后绕开该 D</td>
+</tr>
+<tr>
+<td>t0 + 约 1 分钟</td>
+<td>Curator</td>
+<td>命名空间扫描发现相关 stripe 冗余不足，更新有效冗余度，安排工作 [P1][P4]</td>
+</tr>
+<tr>
+<td>立即</td>
+<td>Custodian（推断）</td>
+<td>有效冗余度低于阈值的高可用数据立即重建：读取健康块，在新的 D 上写出缺失的 chunk</td>
+</tr>
+<tr>
+<td>约 15–30 分钟后</td>
+<td>Custodian（推断）</td>
+<td>故障仍未恢复时，重建其余数据；如果故障已经恢复，就不必重建 [P4][A5]</td>
+</tr>
+<tr>
+<td>重建完成</td>
+<td>Curator</td>
+<td>stripe 事务：更新 chunk 列表，旧位置作废</td>
+</tr>
+</tbody></table>
+<h3 id="6-4-计划内维护"><a href="#6-4-计划内维护" class="headerlink" title="6.4 计划内维护"></a>6.4 计划内维护</h3><table>
+<thead>
+<tr>
+<th>步骤</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>放置阶段</td>
+<td>数据放置时已经保证一个维护单元整体下线也不影响可访问性 [P2][P3][A10]</td>
+</tr>
+<tr>
+<td>维护开始</td>
+<td>相关维护单元进入 inactive 状态；落在其中的 chunk 被视为”暂时损坏”，各 stripe 的有效冗余度随之更新 [P4]</td>
+</tr>
+<tr>
+<td>维护期间</td>
+<td>只有有效冗余度跌破阈值的 stripe 才立即重建；其余等待维护结束</td>
+</tr>
+<tr>
+<td>维护结束</td>
+<td>维护单元恢复 active，有效冗余度恢复，无需重建</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="7-与-GFS、HDFS、Tectonic-的模块对照"><a href="#7-与-GFS、HDFS、Tectonic-的模块对照" class="headerlink" title="7 与 GFS、HDFS、Tectonic 的模块对照"></a>7 与 GFS、HDFS、Tectonic 的模块对照</h2><table>
+<thead>
+<tr>
+<th>职能</th>
+<th>GFS</th>
+<th><strong>Colossus</strong></th>
+<th>HDFS</th>
+<th>Tectonic（Meta）</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>前台元数据</td>
+<td>单 Master（另有只读 shadow master）</td>
+<td><strong>Curator</strong>（数量随集群规模变化，运行在 Bigtable tablet server 中）</td>
+<td>NameNode（可选 Federation）</td>
+<td>Name / File / Block 三层元数据服务</td>
+</tr>
+<tr>
+<td>元数据存储</td>
+<td>Master 内存 + 操作日志</td>
+<td><strong>Bigtable</strong>（内存 locality group）</td>
+<td>NameNode 内存 + EditLog</td>
+<td>ZippyDB</td>
+</tr>
+<tr>
+<td>后台维护</td>
+<td>Master 内部线程（重新复制、重平衡、GC）</td>
+<td><strong>Custodian</strong>（独立角色）</td>
+<td>NameNode 内部（ReplicationMonitor 等）+ Balancer 工具</td>
+<td>后台服务（rebalancer、repair 等）</td>
+</tr>
+<tr>
+<td>数据节点</td>
+<td>chunkserver（本地 Linux FS）</td>
+<td><strong>D Server</strong>（唯一直接访问磁盘的进程；HDD/SSD；后来运行在存储专用硬件上）</td>
+<td>DataNode</td>
+<td>Storage Node</td>
+</tr>
+<tr>
+<td>数据写入</td>
+<td>chunkserver 流水线复制</td>
+<td>客户端并行写 + quorum</td>
+<td>DataNode 流水线复制</td>
+<td>客户端直写</td>
+</tr>
+<tr>
+<td>位置信息来源</td>
+<td>Master 重启时向 chunkserver 收集（需 10–30 分钟）</td>
+<td>持久化在元数据中，open 时一次下发</td>
+<td>DataNode 块报告</td>
+<td>持久化在元数据中</td>
+</tr>
+<tr>
+<td>写者控制</td>
+<td>lease + 主副本</td>
+<td>版本号 fencing（存在每个副本上）</td>
+<td>lease</td>
+<td>单写者 + 序号</td>
+</tr>
+</tbody></table>
+<p>【推断】从对照表可以看出 Colossus 最本质的两点变化：一是<strong>把 GFS Master 的前台和后台拆开</strong>，分别由 Curator 和 Custodian 独立扩展；二是<strong>位置信息从”D 汇报给 Master 的软状态”变为”持久化在 Bigtable 中的硬状态”</strong>，消除了 GFS Master 重启时长达 10–30 分钟的位置收集过程。</p>
+<hr>
+<h2 id="8-尚未公开的关键问题"><a href="#8-尚未公开的关键问题" class="headerlink" title="8 尚未公开的关键问题"></a>8 尚未公开的关键问题</h2><table>
+<thead>
+<tr>
+<th>模块</th>
+<th>问题</th>
+</tr>
+</thead>
+<tbody><tr>
+<td>Curator</td>
+<td>每个 Curator 负责的命名空间如何划分？是否严格对应 tablet？跨 tablet 的操作（如果有 rename）怎么处理？</td>
+</tr>
+<tr>
+<td>Curator</td>
+<td>quorum 写的副本数、成功阈值，以及副本间数据不一致时如何收敛（谁来补齐落后的副本）？</td>
+</tr>
+<tr>
+<td>Curator</td>
+<td>fencing 时如果某个副本不可达，如何处理？</td>
+</tr>
+<tr>
+<td>D Server</td>
+<td>磁盘上的数据布局：是直接管理裸盘，还是建在本地文件系统上？chunk 在盘上如何组织？</td>
+</tr>
+<tr>
+<td>D Server</td>
+<td>多租户 I/O 调度和配额是怎么实现的（Fikes 2010 年把它列为未解决的挑战）？</td>
+</tr>
+<tr>
+<td>D Server</td>
+<td>加密在哪一层做（SRE 书提到 Colossus 提供加密）？</td>
+</tr>
+<tr>
+<td>Custodian</td>
+<td>与 Curator 的分工边界：扫描在 Curator，执行在 Custodian，还是两者都会扫描？</td>
+</tr>
+<tr>
+<td>Custodian</td>
+<td>重建流量与前台流量的隔离和限速方式？</td>
+</tr>
+<tr>
+<td>Custodian</td>
+<td>是否执行原生转码？冷数据迁往大盘的触发条件是什么？</td>
+</tr>
+</tbody></table>
+<hr>
+<h2 id="9-参考资料"><a href="#9-参考资料" class="headerlink" title="9 参考资料"></a>9 参考资料</h2><p><strong>官方资料</strong></p>
+<ul>
+<li>[A1] D. Hildebrand, D. Serenyi. <em>Colossus under the hood: a peek into Google’s scalable storage system</em>. Google Cloud Blog, 2021. <a href="https://cloud.google.com/blog/products/storage-data-transfer/a-peek-behind-colossus-googles-file-system" target="_blank" rel="noopener">https://cloud.google.com/blog/products/storage-data-transfer/a-peek-behind-colossus-googles-file-system</a></li>
+<li>[A2] L. Greenfield, S. Pollen. <em>Colossus under the hood: How we deliver SSD performance at HDD prices</em>. Google Cloud Blog, 2025. <a href="https://cloud.google.com/blog/products/storage-data-transfer/how-colossus-optimizes-data-placement-for-performance" target="_blank" rel="noopener">https://cloud.google.com/blog/products/storage-data-transfer/how-colossus-optimizes-data-placement-for-performance</a></li>
+<li>[A3] D. Serenyi, V. Saraswat. <em>Colossus: the secret ingredient in Rapid Storage’s high performance</em>. Google Cloud Blog, 2025. 转载：<a href="https://www.storagenewsletter.com/2025/04/14/google-cloud-colossus-secret-ingredient-in-rapid-storages-high-performance/" target="_blank" rel="noopener">StorageNewsletter</a></li>
+<li>[A4] D. Serenyi. <em>Cluster-Level Storage @ Google: How we use Colossus to improve storage efficiency</em>. PDSW-DISCS 2017 Keynote. <a href="http://www.pdsw.org/pdsw-discs17/slides/PDSW-DISCS-Google-Keynote.pdf" target="_blank" rel="noopener">http://www.pdsw.org/pdsw-discs17/slides/PDSW-DISCS-Google-Keynote.pdf</a></li>
+<li>[A5] A. Fikes. <em>Storage Architecture and Challenges</em>. Google Faculty Summit, 2010. <a href="https://cloud.google.com/files/storage_architecture_and_challenges.pdf" target="_blank" rel="noopener">https://cloud.google.com/files/storage_architecture_and_challenges.pdf</a></li>
+<li>[A6] W. Look, M. Dallman. <em>Case Studies in Infrastructure Change Management</em>. Google SRE, 2020. <a href="https://sre.google/resources/practices-and-processes/infrastructure-change-management" target="_blank" rel="noopener">https://sre.google/resources/practices-and-processes/infrastructure-change-management</a></li>
+<li>[A7] B. Beyer et al. <em>Site Reliability Engineering</em>, Chapter 2. O’Reilly, 2016. <a href="https://sre.google/sre-book/production-environment/" target="_blank" rel="noopener">https://sre.google/sre-book/production-environment/</a></li>
+<li>[A8] T.-W. Yang et al. <em>CacheSack: Admission Optimization for Google Datacenter Flash Caches</em>. USENIX ATC 2022. <a href="https://www.usenix.org/system/files/atc22-yang-tzu-wei.pdf" target="_blank" rel="noopener">https://www.usenix.org/system/files/atc22-yang-tzu-wei.pdf</a></li>
+<li>[A9] E. Brewer et al. <em>Disks for Data Centers</em>. Google White Paper, 2016. <a href="https://research.google.com/pubs/archive/44830.pdf" target="_blank" rel="noopener">https://research.google.com/pubs/archive/44830.pdf</a></li>
+<li>[A10] S. Kadekodi et al. <em>Practical Design Considerations for Wide Locally Recoverable Codes (LRCs)</em>. USENIX FAST 2023. <a href="https://www.usenix.org/system/files/fast23-kadekodi.pdf" target="_blank" rel="noopener">https://www.usenix.org/system/files/fast23-kadekodi.pdf</a></li>
+</ul>
+<p><strong>专利</strong></p>
+<ul>
+<li>[P1] <em>Single-sided distributed storage system</em>. US9229901、US9916279（Google；相关申请最早于 2012 年提交）. <a href="https://freepatentsonline.com/9916279.html" target="_blank" rel="noopener">https://freepatentsonline.com/9916279.html</a></li>
+<li>[P2] <em>Distributing data on distributed storage systems</em>. US10678647B2、US10318384（Google；优先权 2013-12-05）. <a href="https://patents.google.com/patent/US10678647B2/en" target="_blank" rel="noopener">https://patents.google.com/patent/US10678647B2/en</a></li>
+<li>[P3] R. Cypher, S. Quinlan, S. R. Schirripa, L. Carmi, C. E. Schrock. <em>Efficient data reads from distributed storage systems</em>. US9323615（2014-01-31 申请）. <a href="https://patents.google.com/patent/US9323615B2" target="_blank" rel="noopener">https://patents.google.com/patent/US9323615B2</a></li>
+<li>[P4] <em>Prioritizing data reconstruction in distributed storage systems</em>. US9292389. <a href="https://patents.google.com/patent/US9292389B2/en" target="_blank" rel="noopener">https://patents.google.com/patent/US9292389B2/en</a></li>
+<li>[P5] <em>Efficient resource utilization in data centers</em>. US9311194. <a href="https://patents.google.com/patent/US9311194B1/en" target="_blank" rel="noopener">https://patents.google.com/patent/US9311194B1/en</a></li>
+</ul>
+<p><strong>社区与论文</strong></p>
+<ul>
+<li>[C1] Hacker News: <em>Understanding Google’s File System (2020)</em>, 2024 年讨论. <a href="https://news.ycombinator.com/item?id=39756262" target="_blank" rel="noopener">https://news.ycombinator.com/item?id=39756262</a></li>
+<li>T. Kim et al. <em>Morph: Efficient File-Lifetime Redundancy Management for Cluster File Systems</em>. SOSP 2024. <a href="http://www.pdl.cmu.edu/PDL-FTP/Storage/Morph_Final.pdf" target="_blank" rel="noopener">http://www.pdl.cmu.edu/PDL-FTP/Storage/Morph_Final.pdf</a></li>
+<li>M. Marty et al. <em>Snap: a Microkernel Approach to Host Networking</em>. SOSP 2019. <a href="https://research.google/pubs/snap-a-microkernel-approach-to-host-networking/" target="_blank" rel="noopener">https://research.google/pubs/snap-a-microkernel-approach-to-host-networking/</a></li>
+</ul>
+<hr>
+<p>整理日期：2026-11-07。本文是基于公开资料的学习整理，不代表 Google 官方观点；专利内容不等于生产实现，标注为推断的内容请结合原始资料核实。</p>
+]]></content>
+      <categories>
+        <category>底层技术</category>
+      </categories>
+      <tags>
+        <tag>Colossus</tag>
+        <tag>分布式存储</tag>
+        <tag>文件系统</tag>
+        <tag>Google</tag>
+        <tag>Curator</tag>
+        <tag>Custodian</tag>
+      </tags>
+  </entry>
 </search>
